@@ -1,0 +1,42 @@
+{
+  "name": "nadwork",
+  "version": "1.0.0",
+  "description": "NadWork — On-chain micro-task bounty platform on Monad blockchain",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
+    "deploy:monad": "hardhat run scripts/deploy.js --network monad_mainnet",
+    "verify:monad": "hardhat run scripts/verify.js --network monad_mainnet",
+    "deploy:identity": "hardhat run scripts/deploy-identity-only.js --network monad_mainnet",
+    "node": "hardhat node",
+    "dev": "vite frontend",
+    "build": "vite build frontend",
+    "frontend:dev": "vite frontend",
+    "frontend:build": "vite build frontend"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.0",
+    "@nomicfoundation/hardhat-ethers": "^3.0.0",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.0",
+    "chai": "^4.3.0",
+    "dotenv": "^16.0.0",
+    "ethers": "^6.16.0",
+    "hardhat": "^2.22.0",
+    "solidity-coverage": "^0.8.0"
+  },
+  "dependencies": {
+    "@rainbow-me/rainbowkit": "^2.2.10",
+    "@tanstack/react-query": "^5.90.21",
+    "@vitejs/plugin-react": "^5.1.4",
+    "framer-motion": "^12.34.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "viem": "^2.46.3",
+    "vite": "^7.3.1",
+    "wagmi": "^3.5.0"
+  }
+}

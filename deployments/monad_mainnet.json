@@ -1,0 +1,24 @@
+{
+  "network": "monad_mainnet",
+  "chainId": 143,
+  "deployedAt": "2026-03-01T07:39:35.128Z",
+  "deployer": "0x22D4aa39e05058efAA1dCc5739B141c4c3dbAFA2",
+  "treasury": "0x22D4aa39e05058efAA1dCc5739B141c4c3dbAFA2",
+  "contracts": {
+    "BountyRegistry": {
+      "address": "0x2D32e20d6848F7150e589234A9BB2ef5260c8f29"
+    },
+    "NadWorkEscrow": {
+      "address": "0x82fcb23966DEd2eB9599f9932521A35B43133BC3"
+    },
+    "ReputationRegistry": {
+      "address": "0x2DC3a4b29fe4E2466D039229634e4aE11Ca13c96"
+    },
+    "IdentityRegistry": {
+      "address": "0x97F4b346EE99D9e38Fff1484fA8da240d3dB93Fe"
+    },
+    "BountyFactory": {
+      "address": "0xF3e5409AdB864658E226d6AD332E01fBDCf7A160"
+    }
+  }
+}

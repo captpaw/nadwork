@@ -1,0 +1,28 @@
+name       = "nadwork-pin-proxy"
+main       = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+# Uncomment and fill in after connecting your domain in Cloudflare Dashboard.
+# The worker will handle POST https://nadwork.xyz/api/pin
+#
+# [[routes]]
+# pattern = "nadwork.xyz/api/pin"
+# zone_name = "nadwork.xyz"
+
+# ── Public env vars (non-secret) ──────────────────────────────────────────────
+[vars]
+ALLOWED_ORIGIN = "https://nadwork.xyz"
+# For local dev override (wrangler dev reads .dev.vars instead):
+# ALLOWED_ORIGIN = "http://localhost:3000"
+
+# ── Secrets (set via CLI — never stored in this file) ─────────────────────────
+# Run these once after `wrangler login`:
+#
+#   npx wrangler secret put PINATA_API_KEY
+#   npx wrangler secret put PINATA_API_SECRET
+#   npx wrangler secret put PROXY_AUTH_TOKEN
+#
+# PROXY_AUTH_TOKEN can be any random string, e.g.:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"

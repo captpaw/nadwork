@@ -1,0 +1,218 @@
+/* ── NadWork Global Styles v2 ─────────────────────────────────────────────── */
+/* Concept: Precision Board — ultra-minimal, no noise, pure contrast.          */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-bg:          #080808;
+  --color-card:        #0e0e12;
+  --color-elevated:    #141418;
+  --color-panel:       #0a0a0d;
+  --color-border:      #1e1e26;
+  --color-border-subtle: #16161c;
+  --color-text:        #f0f0f0;
+  --color-text-muted:  #58585e;
+  --color-text-sec:    #a0a0a8;
+  --color-violet:      #7c3aed;
+  --color-violet-dim:  rgba(124,58,237,0.12);
+  --color-green:       #22c55e;
+  --font-mono: 'DM Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+html {
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #222228; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #2e2e36; }
+
+/* ── Selection ─────────────────────────────────────────────────────────────── */
+::selection { background: rgba(124,58,237,0.25); color: #f0f0f0; }
+
+/* ── Focus ─────────────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 1.5px solid rgba(124,58,237,0.5);
+  outline-offset: 2px;
+}
+
+/* ── Container ─────────────────────────────────────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: 1160px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: clamp(20px, 5vw, 48px);
+  padding-right: clamp(20px, 5vw, 48px);
+}
+
+/* ── Typography reset ──────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 { font-weight: 700; line-height: 1.1; }
+a { color: inherit; text-decoration: none; }
+button { border: none; background: none; cursor: pointer; font: inherit; }
+input, textarea, select { font: inherit; }
+img, svg { display: block; }
+
+/* ── Page wrapper ──────────────────────────────────────────────────────────── */
+#root { display: flex; flex-direction: column; min-height: 100vh; }
+.app-content { padding-top: 60px; }
+
+/* ── Keyframes ─────────────────────────────────────────────────────────────── */
+
+/* Entrance: slide up + fade */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Entrance: slide in from left */
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Entrance: fade only */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Headline reveal: clip from bottom */
+@keyframes revealUp {
+  from { clip-path: inset(100% 0 0 0); opacity: 0; }
+  to   { clip-path: inset(0% 0 0 0); opacity: 1; }
+}
+
+/* Live pulse for green dot */
+@keyframes livePulse {
+  0%,100% { opacity: 1; transform: scale(1);   box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
+  50%     { opacity: 0.85; transform: scale(1.15); box-shadow: 0 0 0 4px rgba(34,197,94,0); }
+}
+
+/* Spin for loader */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+
+/* Violet glow pulse for active borders */
+@keyframes glowPulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(124,58,237,0); }
+  50%     { box-shadow: 0 0 0 4px rgba(124,58,237,0.12); }
+}
+
+/* Horizontal draw (for timeline lines) */
+@keyframes drawRight {
+  from { width: 0; opacity: 0; }
+  to   { width: 100%; opacity: 1; }
+}
+
+/* Float for decorative elements */
+@keyframes float {
+  0%,100% { transform: translateY(0); }
+  50%     { transform: translateY(-6px); }
+}
+
+/* Counter tick */
+@keyframes countIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Skeleton ───────────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #0e0e12 25%,
+    #181820 50%,
+    #0e0e12 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ── Utility: Hide scrollbar but keep scroll ──────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Utility: Mono ────────────────────────────────────────────────────────── */
+.mono { font-family: var(--font-mono); }
+
+/* ── Utility: Truncate ────────────────────────────────────────────────────── */
+.truncate { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* ── Animated entrance utilities ─────────────────────────────────────────── */
+.enter-up   { animation: slideUp 0.32s cubic-bezier(0.16,1,0.3,1) both; }
+.enter-fade { animation: fadeIn 0.28s ease both; }
+
+/* ── RainbowKit overrides ──────────────────────────────────────────────────── */
+[data-rk] * { font-family: 'Inter', sans-serif !important; }
+
+/* ── Gradient text ─────────────────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, #c4b5fd 0%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Table base ────────────────────────────────────────────────────────────── */
+.bounty-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.bounty-table th {
+  text-align: left;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+.bounty-table td {
+  padding: 0;
+  border-bottom: 1px solid #111116;
+  vertical-align: middle;
+}
+
+/* ── Media: mobile ─────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+  .container { padding-left: 16px; padding-right: 16px; }
+}
+@media (max-width: 640px) {
+  .hide-sm { display: none !important; }
+}

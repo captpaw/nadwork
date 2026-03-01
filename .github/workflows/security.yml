@@ -1,0 +1,136 @@
+name: Security Scan
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, master, develop]
+
+permissions:
+  contents: read
+  security-events: write  # for uploading SARIF results
+
+jobs:
+  # ─── 1. Secret scanning with Gitleaks ─────────────────────────────────────
+  gitleaks:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for accurate scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ─── 2. Dependency vulnerability audit ────────────────────────────────────
+  npm-audit:
+    name: Dependency Audit (npm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run npm audit (high severity)
+        run: npm audit --audit-level=high --omit=dev
+        continue-on-error: true  # warn but don't fail the pipeline
+
+      - name: Run npm audit (critical severity — must pass)
+        run: npm audit --audit-level=critical --omit=dev
+
+  # ─── 3. Smart contract static analysis (Slither) ──────────────────────────
+  slither:
+    name: Smart Contract Audit (Slither)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run Slither
+        uses: crytic/slither-action@v0.4.0
+        id: slither
+        with:
+          node-version: 20
+          fail-on: high
+          slither-args: --exclude-dependencies --exclude naming-convention
+        continue-on-error: true  # don't block on medium/low findings
+
+  # ─── 4. Environment file leak check ───────────────────────────────────────
+  env-leak-check:
+    name: Env File Leak Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for committed .env files
+        run: |
+          FOUND=0
+          # List every file tracked by git
+          while IFS= read -r file; do
+            case "$file" in
+              .env | .env.* | */.env | */.env.*)
+                # Allow only .env.example files
+                if [[ "$file" != *.example ]]; then
+                  echo "❌ Committed .env file detected: $file"
+                  FOUND=1
+                fi
+                ;;
+              *.key | *.pem | *.p12 | *.pfx | mnemonic.txt | seed.txt | wallet.json)
+                echo "❌ Potential secret file detected: $file"
+                FOUND=1
+                ;;
+            esac
+          done < <(git ls-files)
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "Remove these files from git history using:"
+            echo "  git filter-repo --path <file> --invert-paths"
+            exit 1
+          fi
+          echo "✅ No committed .env or secret files found."
+
+      - name: Scan for hardcoded private keys in tracked files
+        run: |
+          FOUND=0
+          # Check all staged/tracked text files for private key patterns
+          while IFS= read -r file; do
+            if [ -f "$file" ] && file "$file" | grep -qE "text|empty|ASCII"; then
+              if grep -qiE "PRIVATE_KEY\s*=\s*[0-9a-fA-F]{60,}" "$file" 2>/dev/null; then
+                echo "❌ Possible hardcoded private key in: $file"
+                FOUND=1
+              fi
+              if grep -qiE "BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY" "$file" 2>/dev/null; then
+                echo "❌ PEM private key found in: $file"
+                FOUND=1
+              fi
+            fi
+          done < <(git ls-files)
+
+          if [ "$FOUND" -eq 1 ]; then
+            exit 1
+          fi
+          echo "✅ No hardcoded private keys found."

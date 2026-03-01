@@ -1,0 +1,51 @@
+# Gitleaks configuration for NadWork
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "NadWork Gitleaks Config"
+
+[extend]
+# Extend the default ruleset
+useDefault = true
+
+# ─── Allowlist (false positives to ignore) ────────────────────────────────────
+[[rules.allowlist]]
+description = "Ignore example/template env files"
+paths = [
+  '''.env\.example$''',
+  '''frontend/\.env\.example$''',
+]
+
+[[rules.allowlist]]
+description = "Ignore USDC token address (public info)"
+regexes = [
+  '''0x754704Bc059F8C67012fEd69BC8A327a5aafb603''',
+]
+
+[[rules.allowlist]]
+description = "Ignore contract addresses in deployment JSON (public blockchain data)"
+paths = [
+  '''deployments/.*\.json$''',
+  '''frontend/src/config/addresses\.json$''',
+]
+
+# ─── Custom rules ─────────────────────────────────────────────────────────────
+[[rules]]
+id = "eth-private-key"
+description = "Ethereum private key"
+regex = '''(?i)(PRIVATE_KEY|private_key)\s*[=:]\s*[0-9a-fA-F]{64}'''
+tags = ["key", "ethereum", "crypto"]
+severity = "critical"
+
+[[rules]]
+id = "pinata-secret"
+description = "Pinata secret API key"
+regex = '''(?i)(pinata_secret|PINATA_SECRET)\s*[=:]\s*[0-9a-fA-F]{32,}'''
+tags = ["key", "pinata", "ipfs"]
+severity = "critical"
+
+[[rules]]
+id = "mnemonic-phrase"
+description = "BIP39 mnemonic seed phrase"
+regex = '''(?i)mnemonic\s*[=:]\s*['"]?([a-z]+ ){11,23}[a-z]+['"]?'''
+tags = ["key", "mnemonic", "crypto"]
+severity = "critical"
