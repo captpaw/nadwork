@@ -98,9 +98,21 @@ coverage/
 write_icons.js
 write_theme.js
 write_frontend*.js
+write-frontend*.js
+write-theme.js
 test_ps.txt
 scratch.*
 TODO.local.md
+
+# ─── Internal / draft documents (not for public repo) ─────────────────────────
+WORK_IN_PROGRESS.md
+REBRAND_DRAFT.md
+NADWORK_CONCEPT.md
+AUDIT_REPORT.md
+CHANGES_REPORT.md
+
+# ─── Deployment artifacts (addresses live in frontend/src/config/addresses.json) ─
+deployments/
 
 # ─── detect-secrets baseline (contains hashed secrets, safe to commit) ────────
 # .secrets.baseline  ← intentionally NOT ignored; commit the baseline file
