@@ -231,12 +231,6 @@ contract NadWorkEscrow {
         emit TimeoutClaimed(bountyId, hunters, eachAmount);
     }
 
-    // FIX H-02: Pull-payment variant — marks record as released, pays fee to treasury,
-    // but returns the per-hunter amount for factory to queue rather than push.
-    // The factory is responsible for queueing pendingTimeoutPayouts[hunter] += perHunter.
-    // Total payout pool (after fee) stored in _timeoutPools for dust calculation.
-    mapping(uint256 => uint256) private _timeoutPools;
-
     // FIX H-02: Pull-payment variant.
     // Marks escrow as released, pays fee to treasury, then transfers the entire hunter
     // pool to the factory (msg.sender = factory) so the factory can queue pending payouts.
@@ -281,10 +275,6 @@ contract NadWorkEscrow {
         emit TimeoutClaimed(bountyId, hunters, perHunterAmount);
     }
 
-    function getTimeoutPool(uint256 bountyId) external view returns (uint256) {
-        return _timeoutPools[bountyId];
-    }
-
     // Full refund to depositor (cancel with no submissions, expire with no submissions)
     // Also returns poster stake if any (caller must handle separately via refundPosterStake)
     function refund(uint256 bountyId) external onlyFactory nonReentrant {
@@ -316,6 +306,21 @@ contract NadWorkEscrow {
         require(amount > 0, "Escrow: no stake to refund");
         submissionStakes[bountyId][hunter] = 0;
         _safeTransferMON(hunter, amount);
+        emit SubmissionStakeRefunded(bountyId, hunter, amount);
+    }
+
+    // FIX XC-02+T-01: Pull-payment variant — transfer stake to factory instead of pushing to hunter.
+    // Factory queues the refund in pendingStakeRefunds so hunter can claim individually.
+    // Used in triggerTimeout/cancelBounty loops to prevent DoS by malicious hunter contracts.
+    // Returns the stake amount so factory can queue it.
+    function refundSubmissionStakeToFactory(uint256 bountyId, address hunter)
+        external onlyFactory nonReentrant
+        returns (uint256 amount)
+    {
+        amount = submissionStakes[bountyId][hunter];
+        if (amount == 0) return 0; // no-op if stake already returned
+        submissionStakes[bountyId][hunter] = 0;
+        _safeTransferMON(factory, amount);
         emit SubmissionStakeRefunded(bountyId, hunter, amount);
     }
 
@@ -358,6 +363,10 @@ contract NadWorkEscrow {
     }
 
     // Slash held dispute stake to treasury (dispute denied — hunter raised bad-faith dispute)
+    // FIX NE-6: emit DisputeStakeSlashed (dedicated event) instead of SubmissionStakeSlashed
+    // so on-chain indexers can differentiate dispute stake slashes from submission stake slashes
+    event DisputeStakeSlashed(uint256 indexed bountyId, address indexed hunter, uint256 amount);
+
     function slashHeldDisputeStake(uint256 bountyId, address hunter)
         external onlyFactory nonReentrant
     {
@@ -366,7 +375,7 @@ contract NadWorkEscrow {
         heldDisputeStakes[bountyId][hunter] = 0;
         require(treasury != address(0), "Escrow: no treasury");
         _safeTransferMON(treasury, amount);
-        emit SubmissionStakeSlashed(bountyId, hunter, amount);
+        emit DisputeStakeSlashed(bountyId, hunter, amount);
     }
 
     // ── V3: POSTER STAKE MANAGEMENT ──────────────────────────────────────────

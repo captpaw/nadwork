@@ -126,8 +126,12 @@ contract ReputationRegistry {
         address primary = _resolvePrimary(addr);
         if (isHunter) {
             hunters[primary].disputeLost++;
+            // FIX RR-1: update lastActivity so the score change is reflected in activity timeline
+            hunters[primary].lastActivity = block.timestamp;
         } else {
             projects[primary].disputeLost++;
+            // FIX RR-1: same fix for project side
+            projects[primary].lastActivity = block.timestamp;
         }
     }
 

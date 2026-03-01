@@ -5,7 +5,128 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — 2026-03-01
+## [Unreleased] — Round 2 — 2026-03-01
+
+### Workflow — Infrastruktur TDD & Invariants (NEW)
+
+#### Cursor Rule: Persistent Development Workflow
+- **Added:** `.cursor/rules/nadwork-dev-workflow.mdc` — Cursor AI rule yang selalu aktif,
+  berisi: TDD cycle (RED→GREEN→CLEAN→CHECK), CEI order enforcement, pull-payment patterns,
+  impact checklist, dan commit convention.
+- **Always applied:** Rule ini bersifat `alwaysApply: true` sehingga berlaku di setiap sesi.
+
+#### INVARIANTS.md
+- **Added:** `INVARIANTS.md` — Dokumen formal yang mendefinisikan 6 kategori invariant:
+  ETH Balance, State Machine, Access Control, Reputation, Pull-Payment, Username/Identity.
+  Setiap fix di masa depan wajib memverifikasi semua invariant.
+
+#### Invariant Test Suite
+- **Added:** `test/invariants.test.js` — 31 automated invariant tests yang memverifikasi:
+  factory balance coverage, escrow balance coverage, terminal state consistency,
+  submission state consistency, access control, reputation accounting, pull-payment pool,
+  stake accounting, username uniqueness, dan cooldown consistency.
+
+### Security — High (Round 2)
+
+#### NE-1+NE-2: Hapus Dead `_timeoutPools` Mapping (NadWorkEscrow)
+- **Problem NE-1:** `mapping(uint256 => uint256) private _timeoutPools` tidak pernah ditulis
+  oleh `claimTimeoutPullable`. Ini dead code dan misleading bagi auditor.
+- **Problem NE-2:** `getTimeoutPool()` function membaca dari mapping yang selalu 0 (dead function).
+- **Fix:** Hapus `_timeoutPools` mapping dan `getTimeoutPool()` function sepenuhnya.
+- **Files:** `contracts/NadWorkEscrow.sol`
+- **Tests:** `FIX NE-1+NE-2` test suite (2 tests)
+
+#### BUG-IR-1: `unlinkWallet` Sekarang Membersihkan Stale Claim State (IdentityRegistry)
+- **Problem:** `unlinkWallet()` tidak menghapus `_claimInitiatedAt[linkedWallet]` dan
+  `_claimTargetPrimary[linkedWallet]`. Akibatnya, jika primary unlinkWallet dari backup
+  yang sedang melakukan `initiateClaim`, backup tersebut **permanently bricked** — tidak
+  bisa memanggil `initiateClaim` lagi karena `require(_claimInitiatedAt == 0)` selalu gagal.
+- **Fix:** `unlinkWallet()` sekarang membersihkan kedua mapping claim jika ada claim aktif.
+- **Invariant:** II-4 (Claim Timelock Consistency)
+- **Files:** `contracts/IdentityRegistry.sol`
+- **Tests:** `FIX BUG-IR-1` test suite (2 tests)
+
+### Security — Medium (Round 2)
+
+#### M-02: `resolveDispute` Deny Path Kini Restore ke REVIEWING (bukan ACTIVE) jika Post-Deadline (BountyFactory)
+- **Problem:** Jika dispute di-deny setelah `reviewDeadline` lewat, bounty di-restore ke
+  `ACTIVE`. Siapapun bisa langsung memanggil `triggerTimeout` (yang cek `ACTIVE || REVIEWING`),
+  efektifnya memberikan poster "gratis restart" atau membuka race condition draining.
+- **Fix:** Cek `block.timestamp > b.reviewDeadline`. Jika ya, restore ke `REVIEWING`; jika tidak, ke `ACTIVE`.
+- **Invariant:** II-1 (Terminal States)
+- **Files:** `contracts/BountyFactory.sol`
+- **Tests:** `FIX M-02` test suite (3 tests)
+
+#### XC-02+T-01: Submission Stake Refund Loop Diubah ke Pull-Payment (BountyFactory + NadWorkEscrow)
+- **Problem:** `triggerTimeout` dan `cancelBounty` memanggil `escrow.refundSubmissionStake()`
+  dalam loop (push-payment). Jika salah satu hunter adalah smart contract yang `revert` pada
+  `receive()`, seluruh `triggerTimeout`/`cancelBounty` akan DoS dan terkunci selamanya.
+- **Fix:**
+  - Tambah `refundSubmissionStakeToFactory()` di `NadWorkEscrow` (kirim stake ke factory).
+  - Tambah `pendingStakeRefunds` mapping dan `_totalPendingStakeRefunds` counter di `BountyFactory`.
+  - Tambah `claimStakeRefund()` function di `BountyFactory`.
+  - `sweep()` kini melindungi 4 pool: refunds + cancelComps + timeoutPayouts + **stakeRefunds**.
+  - Event baru: `StakeRefundPending(bountyId, hunter, amount)`.
+- **Invariant:** V-1, V-2, I-1
+- **Files:** `contracts/BountyFactory.sol`, `contracts/NadWorkEscrow.sol`
+
+#### BUG-IR-6: `isUsernameAvailable` Sekarang Mengecek Cooldown (IdentityRegistry)
+- **Problem:** `isUsernameAvailable()` mengembalikan `true` untuk username yang sedang dalam
+  90-hari cooldown setelah `adminClearUsername`. Frontend akan menampilkan username tersedia,
+  tapi `setUsername()` akan revert. Wasted gas + UX yang misleading.
+- **Fix:** Tambah pengecekan `_usernameFreedAt[lower]` di `isUsernameAvailable`.
+- **Invariant:** VI-2 (Username Cooldown Consistency)
+- **Files:** `contracts/IdentityRegistry.sol`
+- **Tests:** `FIX BUG-IR-6` test suite (3 tests)
+
+### Security — Low (Round 2)
+
+#### BUG-RR-5: `recordFraudSubmission` Sekarang Dipanggil pada Dispute Deny (ReputationRegistry via BountyFactory)
+- **Problem:** `recordFraudSubmission()` tidak pernah dipanggil dari factory, membuat
+  `fraudCount` selalu 0 dan fraud penalty dalam `getHunterScore()` menjadi dead code.
+- **Fix:** Panggil `reputation.recordFraudSubmission(disputingHunter)` di deny path `resolveDispute()`.
+- **Invariant:** IV-1 (fraudCount Only Increases on Fraud)
+- **Files:** `contracts/BountyFactory.sol`
+- **Tests:** `FIX BUG-RR-5` test suite (2 tests)
+
+#### RR-1: `recordDisputeLost` Sekarang Update `lastActivity` (ReputationRegistry)
+- **Problem:** `recordDisputeLost()` tidak meng-update `lastActivity` untuk hunter maupun
+  project, sehingga score change tidak terefleksi dalam activity timeline.
+- **Fix:** Tambah `lastActivity = block.timestamp` di kedua branch (isHunter true/false).
+- **Files:** `contracts/ReputationRegistry.sol`
+- **Tests:** `FIX RR-1` test suite (2 tests)
+
+#### Low Guards: `whenNotPaused` + `nonReentrant` (BountyFactory)
+- **C01-01:** `rejectSubmission` tambah `whenNotPaused`.
+- **CB-01:** `cancelBounty` tambah `whenNotPaused`.
+- **M-03 guard:** `expireBounty` tambah `whenNotPaused` + `nonReentrant`.
+- **M-04 guard:** `triggerTimeout` tambah `whenNotPaused`.
+- **NR-01:** `transitionToReviewing` tambah `nonReentrant`.
+- **Files:** `contracts/BountyFactory.sol`
+- **Tests:** `FIX Low` test suite (3 tests: rejectSubmission, expireBounty, triggerTimeout blocked when paused)
+
+#### NE-6: `slashHeldDisputeStake` Sekarang Emit `DisputeStakeSlashed` (NadWorkEscrow)
+- **Problem:** `slashHeldDisputeStake` emit `SubmissionStakeSlashed` event yang salah —
+  tidak bisa dibedakan dari slash submission stake biasa oleh on-chain indexer.
+- **Fix:** Tambah event `DisputeStakeSlashed` dan emit dari `slashHeldDisputeStake`.
+- **Files:** `contracts/NadWorkEscrow.sol`
+
+### Frontend ABI (Round 2)
+
+#### contracts.js: Event dan Function Baru (frontend/src/config/contracts.js)
+- Tambah 3 event yang missing: `BountyFeaturedByOwner`, `CancelCompPending`, `TimeoutPayoutPending`.
+- Tambah event baru: `StakeRefundPending`.
+- Tambah function: `claimStakeRefund()`, `pendingStakeRefunds(address)`.
+- **Files:** `frontend/src/config/contracts.js`
+
+### Testing (Round 2)
+- Round 2 failing tests (RED phase): 11 tests failing BEFORE fixes.
+- Round 2 fixes brought all tests to GREEN: 111 → 142 passing tests.
+- Added `test/invariants.test.js`: 31 automated invariant tests.
+
+---
+
+## [Unreleased] — Round 1 — 2026-03-01
 
 ### Security — Critical
 

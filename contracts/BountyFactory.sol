@@ -53,6 +53,14 @@ contract BountyFactory {
     mapping(address => uint256) public pendingTimeoutPayouts;
     uint256 private _totalPendingTimeoutPayouts;
 
+    // ── FIX XC-02+T-01: Submission stake refund pull-payment ─────────────────
+    // triggerTimeout and cancelBounty previously called escrow.refundSubmissionStake()
+    // in a loop (push-payment), which is a DoS vector if any hunter is a smart contract
+    // that reverts on receive(). Changed to pull-payment: escrow sends funds to factory
+    // (via refundSubmissionStakeToFactory), factory queues for each hunter to claim.
+    mapping(address => uint256) public pendingStakeRefunds;
+    uint256 private _totalPendingStakeRefunds;
+
     // ── Events ────────────────────────────────────────────────────────────────
     event BountyCreated(uint256 indexed bountyId, address indexed poster, uint256 reward);
     event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter);
@@ -78,6 +86,8 @@ contract BountyFactory {
     event CancelCompPending(uint256 indexed bountyId, address indexed hunter, uint256 amount);
     // FIX H-02: pull-payment for timeout payout
     event TimeoutPayoutPending(uint256 indexed bountyId, address indexed hunter, uint256 amount);
+    // FIX XC-02+T-01: pull-payment for submission stake refunds
+    event StakeRefundPending(uint256 indexed bountyId, address indexed hunter, uint256 amount);
 
     // ── Modifiers ─────────────────────────────────────────────────────────────
     modifier onlyOwner()     { require(msg.sender == owner, "Factory: not owner"); _; }
@@ -323,7 +333,9 @@ contract BountyFactory {
 
     // ── REJECT SUBMISSION ─────────────────────────────────────────────────────
     // FIX-2: nonReentrant guards against re-entry during MON refund to hunter
-    function rejectSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
+    // FIX C01-01: added whenNotPaused — without it, a paused contract would silently allow
+    // poster to reject during pause (griefing: hunter submission expires during pause window)
+    function rejectSubmission(uint256 bountyId, uint256 submissionId) external whenNotPaused nonReentrant {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(msg.sender == b.poster,                                          "Factory: not poster");
         require(b.status == BountyRegistry.BountyStatus.ACTIVE ||
@@ -370,7 +382,8 @@ contract BountyFactory {
     }
 
     // ── CANCEL BOUNTY ─────────────────────────────────────────────────────────
-    function cancelBounty(uint256 bountyId) external payable nonReentrant {
+    // FIX CB-01: added whenNotPaused — cancel changes state and refunds funds
+    function cancelBounty(uint256 bountyId) external payable whenNotPaused nonReentrant {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(msg.sender == b.poster,                           "Factory: not poster");
         require(b.status == BountyRegistry.BountyStatus.ACTIVE ||
@@ -426,10 +439,15 @@ contract BountyFactory {
                     }
                 }
 
-                // Refund submission stakes for pending submissions
+                // FIX XC-02+T-01: Use pull-payment for submission stake refunds.
                 for (uint256 i = 0; i < subs.length; i++) {
                     if (subs[i].status == BountyRegistry.SubStatus.PENDING) {
-                        escrow.refundSubmissionStake(bountyId, subs[i].hunter);
+                        uint256 stakeAmt = escrow.refundSubmissionStakeToFactory(bountyId, subs[i].hunter);
+                        if (stakeAmt > 0) {
+                            pendingStakeRefunds[subs[i].hunter] += stakeAmt;
+                            _totalPendingStakeRefunds            += stakeAmt;
+                            emit StakeRefundPending(bountyId, subs[i].hunter, stakeAmt);
+                        }
                     }
                 }
 
@@ -476,7 +494,8 @@ contract BountyFactory {
     // Can be called by anyone once deadline has passed and pending submissions exist.
     // Signals on-chain that the poster's review window has begun.
     // FIX M-05: added whenNotPaused so this is blocked during emergency pause (consistent with all other state-changing functions)
-    function transitionToReviewing(uint256 bountyId) external whenNotPaused {
+    // FIX NR-01: added nonReentrant — registry.updateBountyStatus is an external call
+    function transitionToReviewing(uint256 bountyId) external whenNotPaused nonReentrant {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(b.status == BountyRegistry.BountyStatus.ACTIVE,  "Factory: not active");
         require(block.timestamp >= b.deadline,                   "Factory: deadline not reached");
@@ -495,7 +514,9 @@ contract BountyFactory {
     }
 
     // ── EXPIRE BOUNTY (no submissions) ───────────────────────────────────────
-    function expireBounty(uint256 bountyId) external {
+    // FIX M-03: added whenNotPaused for consistency — expire changes state and refunds
+    // FIX NR-02: added nonReentrant — escrow.refund and escrow.refundPosterStake transfer ETH
+    function expireBounty(uint256 bountyId) external whenNotPaused nonReentrant {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(b.status == BountyRegistry.BountyStatus.ACTIVE,  "Factory: not active");
         require(block.timestamp >= b.deadline,                   "Factory: not expired yet");
@@ -507,7 +528,8 @@ contract BountyFactory {
     }
 
     // ── TRIGGER TIMEOUT (poster ghosted after review deadline) ───────────────
-    function triggerTimeout(uint256 bountyId) external nonReentrant {
+    // FIX M-04: added whenNotPaused — timeout changes state and transfers ETH
+    function triggerTimeout(uint256 bountyId) external whenNotPaused nonReentrant {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(b.status == BountyRegistry.BountyStatus.ACTIVE ||
                 b.status == BountyRegistry.BountyStatus.REVIEWING,         "Factory: not active");
@@ -547,9 +569,17 @@ contract BountyFactory {
         }
         // If hunterPool == 0, it was an ERC20 bounty handled directly in escrow (push-payment).
 
-        // V3: refund submission stakes to pending hunters
+        // FIX XC-02+T-01: Use pull-payment for submission stake refunds.
+        // The old push-payment loop (refundSubmissionStake in a loop) is a DoS vector:
+        // a malicious hunter smart contract that reverts on receive() would block the
+        // entire triggerTimeout for all other hunters.
         for (uint256 i = 0; i < pendingHunters.length; i++) {
-            escrow.refundSubmissionStake(bountyId, pendingHunters[i]);
+            uint256 stakeAmt = escrow.refundSubmissionStakeToFactory(bountyId, pendingHunters[i]);
+            if (stakeAmt > 0) {
+                pendingStakeRefunds[pendingHunters[i]] += stakeAmt;
+                _totalPendingStakeRefunds              += stakeAmt;
+                emit StakeRefundPending(bountyId, pendingHunters[i], stakeAmt);
+            }
         }
 
         // V3: slash poster stake 100% to treasury (poster ghosted)
@@ -580,6 +610,16 @@ contract BountyFactory {
         _totalPendingCancelComps -= amount;
         (bool ok,) = msg.sender.call{value: amount, gas: 100_000}("");
         require(ok, "Factory: cancel comp transfer failed");
+    }
+
+    // FIX XC-02+T-01: Hunter claims their queued submission stake refund
+    function claimStakeRefund() external nonReentrant {
+        uint256 amount = pendingStakeRefunds[msg.sender];
+        require(amount > 0, "Factory: no stake refund pending");
+        pendingStakeRefunds[msg.sender] = 0;
+        _totalPendingStakeRefunds -= amount;
+        (bool ok,) = msg.sender.call{value: amount, gas: 100_000}("");
+        require(ok, "Factory: stake refund transfer failed");
     }
 
     // ── DISPUTE MECHANISM ─────────────────────────────────────────────────────
@@ -670,10 +710,24 @@ contract BountyFactory {
             if (disputingHunter != address(0)) {
                 escrow.slashHeldDisputeStake(bountyId, disputingHunter);
                 reputation.recordDisputeLost(disputingHunter, true);
+                // FIX BUG-RR-5: record fraud submission so fraudCount is incremented.
+                // Previously recordFraudSubmission was never called, making fraudCount
+                // always 0 and the fraud penalty in getHunterScore() dead code.
+                // A denied dispute means the hunter raised a bad-faith / fraudulent dispute.
+                reputation.recordFraudSubmission(disputingHunter);
             }
 
             if (!escrow.isSettled(bountyId)) {
-                registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.ACTIVE);
+                // FIX M-02: if we're past the reviewDeadline, restore to REVIEWING so
+                // triggerTimeout can be called immediately. Restoring to ACTIVE would allow
+                // an instant triggerTimeout attack (triggerTimeout checks ACTIVE || REVIEWING).
+                // Restoring to ACTIVE past the deadline gives the poster an undeserved
+                // second chance and creates a race condition where anyone can immediately timeout.
+                if (block.timestamp > b.reviewDeadline) {
+                    registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.REVIEWING);
+                } else {
+                    registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.ACTIVE);
+                }
             } else {
                 registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.COMPLETED);
             }
@@ -731,9 +785,13 @@ contract BountyFactory {
     }
 
     // ── ADMIN: sweep accumulated fees (denied dispute deposits, etc.) ───────────
-    // Protects all three pull-payment pools: dispute refunds, cancel comps, timeout payouts.
+    // Protects all four pull-payment pools: dispute refunds, cancel comps, timeout payouts,
+    // and submission stake refunds (FIX XC-02+T-01).
     function sweep() external onlyOwner nonReentrant {
-        uint256 reserved  = _totalPendingRefunds + _totalPendingCancelComps + _totalPendingTimeoutPayouts;
+        uint256 reserved  = _totalPendingRefunds
+                          + _totalPendingCancelComps
+                          + _totalPendingTimeoutPayouts
+                          + _totalPendingStakeRefunds;
         uint256 bal       = address(this).balance;
         require(bal > reserved, "Factory: nothing to sweep");
         uint256 sweepable = bal - reserved;

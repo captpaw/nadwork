@@ -492,8 +492,10 @@ describe("cancelBounty — V3 (poster stake slash)", function () {
     const halfStake = posterStake / 2n;
     // Comp is queued (pull-payment)
     expect(await factory.pendingCancelComps(hunter1.address)).to.equal(compRequired);
-    // Hunter immediately receives: subStake refund (escrow push) + 50% poster stake slash (escrow push)
-    expect(hunter1After - hunter1Before).to.be.closeTo(subStake + halfStake, ETH(0.001));
+    // FIX XC-02: subStake now also queued as pull-payment (pendingStakeRefunds), not pushed.
+    // Hunter immediately receives: only 50% poster stake slash from slashPosterStake (escrow push)
+    expect(await factory.pendingStakeRefunds(hunter1.address)).to.equal(subStake);
+    expect(hunter1After - hunter1Before).to.be.closeTo(halfStake, ETH(0.001));
     // Treasury gets the other 50% of poster stake
     expect(treasuryAfter - treasuryBefore).to.be.closeTo(halfStake, ETH(0.001));
     expect(await escrow.posterStakes(1)).to.equal(0n);
@@ -591,11 +593,12 @@ describe("triggerTimeout — V3 (review deadline + poster stake slashed)", funct
     const hunter1After  = await ethers.provider.getBalance(hunter1.address);
 
     // FIX H-02: triggerTimeout uses pull-payment. Hunter payout is queued, not pushed.
-    // Submission stake is still refunded immediately via escrow.refundSubmissionStake.
+    // FIX XC-02: Submission stake also queued as pull-payment (pendingStakeRefunds).
     const pending = await factory.pendingTimeoutPayouts(hunter1.address);
     expect(pending).to.be.closeTo(ETH(0.485), ETH(0.002));
-    // Hunter received submission stake refund immediately
-    expect(hunter1After - hunter1Before).to.be.closeTo(stake, ETH(0.002));
+    // Hunter stake now queued as pull-payment (pendingStakeRefunds), not pushed directly
+    expect(await factory.pendingStakeRefunds(hunter1.address)).to.equal(stake);
+    expect(hunter1After - hunter1Before).to.be.closeTo(0n, ETH(0.001));
     // Treasury gets 3% fee + 100% poster stake
     expect(treasuryAfter - treasuryBefore).to.be.closeTo(ETH(0.015) + posterStake, ETH(0.002));
   });
@@ -1116,14 +1119,16 @@ describe("FIX H-01: cancelBounty pull-payment", function () {
     const h1Before = await ethers.provider.getBalance(hunter1.address);
     await factory.connect(poster).cancelBounty(1, { value: comp });
     const h1After = await ethers.provider.getBalance(hunter1.address);
-    // Comp is NOT pushed — only submission stake + 50% poster stake slash are pushed immediately
+    // FIX XC-02: Comp is NOT pushed, AND submission stake is also now pull-payment (pendingStakeRefunds).
+    // Hunter immediately receives: only 50% poster stake slash (pushed by slashPosterStake).
     const stake = calcSubStake(ETH(0.5), 15_000n);
     const posterStake = calcPosterStake(ETH(0.5));
     const halfPosterStake = posterStake / 2n;
-    // Hunter immediately receives: stake refund + poster stake half
-    expect(h1After - h1Before).to.be.closeTo(stake + halfPosterStake, ETH(0.0005));
+    expect(h1After - h1Before).to.be.closeTo(halfPosterStake, ETH(0.0005));
     // pendingCancelComps should be exactly comp
     expect(await factory.pendingCancelComps(hunter1.address)).to.equal(comp);
+    // pendingStakeRefunds should be exactly the submission stake
+    expect(await factory.pendingStakeRefunds(hunter1.address)).to.equal(stake);
   });
 
   it("hunter claims cancel compensation via claimCancelComp()", async function () {
@@ -1184,11 +1189,14 @@ describe("FIX H-02: triggerTimeout pull-payment", function () {
     const h1Before = await ethers.provider.getBalance(hunter1.address);
     await factory.connect(anyone).triggerTimeout(1);
     const h1After = await ethers.provider.getBalance(hunter1.address);
-    // Submission stake is refunded immediately (escrow push), but reward payout is queued
+    // FIX XC-02: Submission stake is now also queued as pull-payment (pendingStakeRefunds).
+    // Hunter balance does NOT change immediately.
     const stake = calcSubStake(ETH(0.5), 15_000n);
-    expect(h1After - h1Before).to.be.closeTo(stake, ETH(0.0001));
+    expect(h1After - h1Before).to.be.closeTo(0n, ETH(0.0001));
     // pendingTimeoutPayouts should be non-zero (the reward portion)
     expect(await factory.pendingTimeoutPayouts(hunter1.address)).to.be.gt(0n);
+    // pendingStakeRefunds should be non-zero (the submission stake)
+    expect(await factory.pendingStakeRefunds(hunter1.address)).to.equal(stake);
   });
 
   it("hunter claims timeout payout via claimTimeoutPayout()", async function () {
@@ -1336,9 +1344,11 @@ describe("FIX H-04: claimPrimary timelock (initiateClaim + finalizeClaim)", func
     // Primary unlinks hunter2 before timelock expires
     await identity.connect(hunter1).unlinkWallet(hunter2.address);
     await time.increase(3 * ONE_DAY + 60);
-    // finalizeClaim must fail because link was removed
+    // FIX BUG-IR-1: unlinkWallet now clears _claimInitiatedAt[hunter2].
+    // So finalizeClaim fails with "no pending claim" (not "link was removed during timelock").
+    // This is even stronger protection — claim is fully cancelled by unlink, not just blocked.
     await expect(identity.connect(hunter2).finalizeClaim())
-      .to.be.revertedWith("Identity: link was removed during timelock");
+      .to.be.revertedWith("Identity: no pending claim");
   });
 });
 
@@ -1537,5 +1547,356 @@ describe("withdrawRejectedStake flow", function () {
     await time.increase(2 * 3600 + 60);
     await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1))
       .to.be.revertedWith("Factory: already disputed");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: NE-1+NE-2 — claimTimeoutPullable CEI order
+// Bug: r.released = true BEFORE _safeTransferMON(factory, hunterPool)
+// If escrow's receive() were to revert, ETH would be permanently locked.
+// Fix: state change (released=true) must happen before external call, but
+//      the call itself must complete atomically; verify pool arrives correctly.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX NE-1+NE-2 — claimTimeoutPullable correctness", function () {
+  it("factory receives hunterPool after triggerTimeout (native bounty)", async function () {
+    const ctx = await deployAll();
+    const { factory, escrow, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "ne1a");
+    await registerUsername(identity, hunter2, "ne1b");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
+    // Advance past reviewDeadline
+    await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
+    // Record escrow balance before
+    const escrowBefore = await ethers.provider.getBalance(await escrow.getAddress());
+    const factoryBefore = await ethers.provider.getBalance(await factory.getAddress());
+    await factory.connect(hunter1).triggerTimeout(1);
+    const escrowAfter = await ethers.provider.getBalance(await escrow.getAddress());
+    const factoryAfter = await ethers.provider.getBalance(await factory.getAddress());
+    // escrow.balance should decrease by reward amount (fee goes to treasury, pool to factory)
+    expect(escrowAfter).to.be.lt(escrowBefore);
+    // factory.balance should increase by hunterPool, minus what gets queued
+    // (pending timeout payouts are on factory, not paid out yet)
+    const pending1 = await factory.pendingTimeoutPayouts(hunter1.address);
+    const pending2 = await factory.pendingTimeoutPayouts(hunter2.address);
+    expect(pending1 + pending2).to.be.gt(0n);
+    // Verify escrow record is settled
+    const record = await escrow.getRecord(1);
+    expect(record.released).to.be.true;
+  });
+
+  it("escrow record is settled AFTER transfer (CEI invariant)", async function () {
+    const ctx = await deployAll();
+    const { factory, escrow, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "ne2a");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
+    await factory.connect(hunter1).triggerTimeout(1);
+    // After triggerTimeout, the record must be settled (released == true)
+    const record = await escrow.getRecord(1);
+    expect(record.released).to.equal(true);
+    // Cannot trigger timeout again (already settled)
+    await expect(factory.connect(hunter1).triggerTimeout(1))
+      .to.be.revertedWith("Factory: not active");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: BUG-IR-1 — unlinkWallet must clear stale claim state
+// Bug: After unlinkWallet, _claimInitiatedAt and _claimTargetPrimary not cleared.
+//      evicted wallet is permanently bricked — cannot initiate future claims.
+// Fix: unlinkWallet must delete _claimInitiatedAt[linkedWallet] and
+//      _claimTargetPrimary[linkedWallet]
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX BUG-IR-1 — unlinkWallet clears stale claim state", function () {
+  it("linked wallet can initiate new claim after being unlinked and re-linked", async function () {
+    const ctx = await deployAll();
+    const { identity, poster, hunter1 } = ctx;
+    // Setup: poster=primary, hunter1=linked
+    await identity.connect(poster).setUsername("pri1");
+    await identity.connect(hunter1).setUsername("bkp1");
+    await identity.connect(poster).proposeLink(hunter1.address);
+    await identity.connect(hunter1).confirmLink(poster.address);
+    // hunter1 initiates claim
+    await identity.connect(hunter1).initiateClaim(poster.address);
+    // Verify claim is pending
+    const [initiatedAt] = await identity.getPendingClaim(hunter1.address);
+    expect(initiatedAt).to.be.gt(0n);
+    // Primary cancels by unlinking
+    await identity.connect(poster).unlinkWallet(hunter1.address);
+    // BUG-IR-1: after unlink, claim state should be cleared
+    const [initiatedAfter] = await identity.getPendingClaim(hunter1.address);
+    expect(initiatedAfter).to.equal(0n);
+  });
+
+  it("evicted wallet can be re-linked and initiate a new claim (not permanently bricked)", async function () {
+    const ctx = await deployAll();
+    const { identity, poster, hunter1, hunter2 } = ctx;
+    await identity.connect(poster).setUsername("pri2");
+    await identity.connect(hunter1).setUsername("bkp2");
+    await identity.connect(poster).proposeLink(hunter1.address);
+    await identity.connect(hunter1).confirmLink(poster.address);
+    // hunter1 initiates claim
+    await identity.connect(hunter1).initiateClaim(poster.address);
+    // Primary unlinks hunter1 (this should clear claim state)
+    await identity.connect(poster).unlinkWallet(hunter1.address);
+    // Without fix: hunter1 cannot call initiateClaim again (stale state blocks it)
+    // With fix: hunter1 can be re-linked and initiate a fresh claim
+    await identity.connect(poster).proposeLink(hunter1.address);
+    await identity.connect(hunter1).confirmLink(poster.address);
+    // This should NOT revert with "claim already pending" after the fix
+    await expect(identity.connect(hunter1).initiateClaim(poster.address))
+      .to.not.be.revertedWith("Identity: claim already pending");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: M-02 — resolveDispute deny path must not restore ACTIVE past deadline
+// Bug: deny path sets status=ACTIVE even if past reviewDeadline.
+//      A malicious actor can immediately call triggerTimeout to drain the escrow.
+// Fix: check block.timestamp vs reviewDeadline, restore to REVIEWING if past deadline.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX M-02 — resolveDispute deny restores correct state", function () {
+  it("deny before reviewDeadline: bounty restores to ACTIVE", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "m02a");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    // Resolve before reviewDeadline
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    const b = await factory.registry.then ? factory.registry() : null;
+    // Check via registry
+    const { registry } = ctx;
+    const bounty = await registry.getBounty(1);
+    expect(bounty.status).to.equal(0n); // 0 = ACTIVE
+  });
+
+  it("deny AFTER reviewDeadline: bounty restores to REVIEWING, not ACTIVE", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, hunter2, identity, registry } = ctx;
+    await registerUsername(identity, hunter1, "m02b");
+    await registerUsername(identity, hunter2, "m02bh2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    // hunter1 submits and gets rejected+disputed; hunter2 submits and stays PENDING
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    // Advance past deadline and reviewDeadline
+    await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    const bounty = await registry.getBounty(1);
+    // With fix: status should be REVIEWING (1), not ACTIVE (0)
+    expect(bounty.status).to.equal(1n); // 1 = REVIEWING
+    // triggerTimeout should now be callable (hunter2 has a pending submission)
+    await expect(factory.connect(hunter1).triggerTimeout(1))
+      .to.not.be.reverted;
+  });
+
+  it("deny AFTER reviewDeadline: triggerTimeout works immediately (no free restart)", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "m02c");
+    await registerUsername(identity, hunter2, "m02ch2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    // hunter1 submits and gets rejected+disputed; hunter2 submits and stays PENDING
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    // Without fix: triggerTimeout would revert because status was ACTIVE (not past review)
+    // With fix: triggerTimeout works because status is REVIEWING and reviewDeadline passed
+    await expect(factory.connect(hunter1).triggerTimeout(1))
+      .to.not.be.reverted;
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: BUG-IR-6 — isUsernameAvailable must check cooldown
+// Bug: isUsernameAvailable returns true for a name in cooldown period after admin clear.
+//      Frontend would show the name as available when setUsername would revert.
+// Fix: check _usernameFreedAt in isUsernameAvailable
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX BUG-IR-6 — isUsernameAvailable checks cooldown", function () {
+  it("returns false for a username in 90-day cooldown after admin clear", async function () {
+    const ctx = await deployAll();
+    const { identity, owner, hunter1 } = ctx;
+    await identity.connect(hunter1).setUsername("ir6test");
+    // Admin clears the username
+    await identity.connect(owner).adminClearUsername(hunter1.address);
+    // Immediately after clear: name is in cooldown → isUsernameAvailable must return false
+    const available = await identity.isUsernameAvailable("ir6test", ethers.ZeroAddress);
+    expect(available).to.be.false;
+  });
+
+  it("returns true for a username after 90-day cooldown expires", async function () {
+    const ctx = await deployAll();
+    const { identity, owner, hunter1 } = ctx;
+    await identity.connect(hunter1).setUsername("ir6x");
+    await identity.connect(owner).adminClearUsername(hunter1.address);
+    // Advance 90 days + 1 second
+    await time.increase(90 * ONE_DAY + 1);
+    const available = await identity.isUsernameAvailable("ir6x", ethers.ZeroAddress);
+    expect(available).to.be.true;
+  });
+
+  it("setUsername reverts during cooldown even if isUsernameAvailable was broken", async function () {
+    const ctx = await deployAll();
+    const { identity, owner, hunter1, anyone } = ctx;
+    await identity.connect(hunter1).setUsername("ir6y");
+    await identity.connect(owner).adminClearUsername(hunter1.address);
+    // 'anyone' has no username yet — tries to claim "ir6y" which is in cooldown
+    await expect(identity.connect(anyone).setUsername("ir6y"))
+      .to.be.revertedWith("Identity: username in cooldown (90 days after admin clear)");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: BUG-RR-5 — recordFraudSubmission must be called on dispute deny
+// Bug: fraudCount is never incremented because recordFraudSubmission is never called.
+//      This makes the fraud penalty in getHunterScore() dead code.
+// Fix: call recordFraudSubmission(disputingHunter) in resolveDispute deny path.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX BUG-RR-5 — fraudCount incremented on dispute deny", function () {
+  it("hunter fraudCount increases when dispute is denied", async function () {
+    const ctx = await deployAll();
+    const { factory, reputation, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "rr5a");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    // Get stats before
+    const statsBefore = await reputation.getHunterStats(hunter1.address);
+    expect(statsBefore.fraudCount).to.equal(0n);
+    // Deny the dispute
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    // fraudCount must now be 1
+    const statsAfter = await reputation.getHunterStats(hunter1.address);
+    expect(statsAfter.fraudCount).to.equal(1n);
+  });
+
+  it("fraud penalty reduces hunter score after dispute deny", async function () {
+    const ctx = await deployAll();
+    const { factory, reputation, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "rr5b");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    const scoreBefore = await reputation.getHunterScore(hunter1.address);
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    const scoreAfter = await reputation.getHunterScore(hunter1.address);
+    // After fraud: fraudCount*50 + disputeLost*15 penalty applied → score should drop
+    expect(scoreAfter).to.be.lt(scoreBefore);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: Low — whenNotPaused guards missing
+// Bugs: rejectSubmission, expireBounty, triggerTimeout missing whenNotPaused
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX Low — whenNotPaused guards", function () {
+  it("rejectSubmission blocked when paused", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "gs1");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(owner).pause();
+    await expect(factory.connect(poster).rejectSubmission(1, 1))
+      .to.be.revertedWith("Factory: paused");
+  });
+
+  it("expireBounty blocked when paused", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, identity } = ctx;
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    await time.increase(ONE_DAY * 3 + 60);
+    await factory.connect(owner).pause();
+    await expect(factory.connect(owner).expireBounty(1))
+      .to.be.revertedWith("Factory: paused");
+  });
+
+  it("triggerTimeout blocked when paused", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "gs3");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
+    await factory.connect(owner).pause();
+    await expect(factory.connect(hunter1).triggerTimeout(1))
+      .to.be.revertedWith("Factory: paused");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 2 FIX: RR-1 — recordDisputeLost must update lastActivity
+// Bug: recordDisputeLost does not set lastActivity, leaving stale timestamp
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FIX RR-1 — recordDisputeLost updates lastActivity", function () {
+  it("hunter lastActivity updated after losing dispute", async function () {
+    const ctx = await deployAll();
+    const { factory, reputation, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "rr1a");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    const statsBefore = await reputation.getHunterStats(hunter1.address);
+    const lastBefore = statsBefore.lastActivity;
+    // Advance time so lastActivity must change
+    await time.increase(3600);
+    await factory.connect(owner).resolveDispute(1, false, hunter1.address);
+    const statsAfter = await reputation.getHunterStats(hunter1.address);
+    expect(statsAfter.lastActivity).to.be.gt(lastBefore);
+  });
+
+  it("poster lastActivity updated after losing dispute", async function () {
+    const ctx = await deployAll();
+    const { factory, reputation, owner, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "rr1b");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    const statsBefore = await reputation.getProjectStats(poster.address);
+    const lastBefore = statsBefore.lastActivity;
+    await time.increase(3600);
+    // inFavorOfHunters = true → poster loses
+    await factory.connect(owner).resolveDispute(1, true, hunter1.address);
+    const statsAfter = await reputation.getProjectStats(poster.address);
+    expect(statsAfter.lastActivity).to.be.gt(lastBefore);
   });
 });

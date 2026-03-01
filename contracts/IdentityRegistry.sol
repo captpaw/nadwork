@@ -245,6 +245,15 @@ contract IdentityRegistry {
 
         delete _primaryOf[linkedWallet];
 
+        // FIX BUG-IR-1: clear any pending claim initiated by this linked wallet.
+        // If we don't clear these, the evicted wallet's _claimInitiatedAt remains non-zero,
+        // permanently blocking it from calling initiateClaim() again in the future
+        // (the require(_claimInitiatedAt[msg.sender] == 0) check would always fail).
+        if (_claimInitiatedAt[linkedWallet] != 0) {
+            delete _claimInitiatedAt[linkedWallet];
+            delete _claimTargetPrimary[linkedWallet];
+        }
+
         // Remove from the primary's linkedWallets array (swap-and-pop)
         address[] storage lw = _identities[actualPrimary].linkedWallets;
         for (uint256 i = 0; i < lw.length; i++) {
@@ -485,6 +494,12 @@ contract IdentityRegistry {
         if (!_isValidUsername(lower)) return false;
         // If name is already taken, it's not available (period — no "re-use by same owner")
         if (_usernameTaken[lower] != address(0)) return false;
+        // FIX BUG-IR-6: also check the 90-day cooldown after adminClearUsername.
+        // Without this check, the frontend would show a name as available when setUsername
+        // would actually revert with "username in cooldown". Misleading UX + wasted gas.
+        if (_usernameFreedAt[lower] != 0 && block.timestamp < _usernameFreedAt[lower] + USERNAME_COOLDOWN) {
+            return false;
+        }
         // If caller already owns a username, they cannot claim another
         if (caller != address(0)) {
             address primary = _primaryOf[caller] != address(0) ? _primaryOf[caller] : caller;

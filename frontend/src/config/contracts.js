@@ -47,11 +47,13 @@ export const FACTORY_ABI = [
   'function GRACE_PERIOD_REJECT() view returns (uint256)',
   'function MIN_DURATION() view returns (uint256)',
   'function MAX_DURATION() view returns (uint256)',
-  // FIX H-01 + H-02: pull-payment claim functions
+  // FIX H-01 + H-02 + XC-02: pull-payment claim functions
   'function claimCancelComp() external',
   'function claimTimeoutPayout() external',
+  'function claimStakeRefund() external',
   'function pendingCancelComps(address) view returns (uint256)',
   'function pendingTimeoutPayouts(address) view returns (uint256)',
+  'function pendingStakeRefunds(address) view returns (uint256)',
   // Events
   'event BountyCreated(uint256 indexed bountyId, address indexed poster, uint256 reward)',
   'event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter)',
@@ -59,6 +61,8 @@ export const FACTORY_ABI = [
   'event DisputeRaised(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter)',
   'event DisputeResolved(uint256 indexed bountyId, bool inFavorOfHunters)',
   'event BountyFeatured(uint256 indexed bountyId)',
+  // FIX contracts.js#4: BountyFeaturedByOwner event was missing
+  'event BountyFeaturedByOwner(uint256 indexed bountyId)',
   'event BountyCancelled(uint256 indexed bountyId)',
   'event SubmissionStakeRequired(uint256 indexed bountyId, address indexed hunter, uint256 amount)',
   'event BountyEnteredReview(uint256 indexed bountyId, uint256 pendingCount)',
@@ -67,6 +71,12 @@ export const FACTORY_ABI = [
   'event TimeoutTriggered(uint256 indexed bountyId, address triggeredBy)',
   'event DisputeRefundPending(address indexed hunter, uint256 amount)',
   'event PosterStakeSlashedOnCancel(uint256 indexed bountyId, uint256 amount)',
+  // FIX contracts.js#4: CancelCompPending event was missing
+  'event CancelCompPending(uint256 indexed bountyId, address indexed hunter, uint256 amount)',
+  // FIX contracts.js#4: TimeoutPayoutPending event was missing
+  'event TimeoutPayoutPending(uint256 indexed bountyId, address indexed hunter, uint256 amount)',
+  // FIX XC-02: new event for submission stake refund pull-payment
+  'event StakeRefundPending(uint256 indexed bountyId, address indexed hunter, uint256 amount)',
 ];
 
 // V3 tuple: added reviewDeadline, posterStake to Bounty; gracePeriodExpired, submissionStake to Submission
