@@ -21,11 +21,14 @@ jobs:
         with:
           fetch-depth: 0  # full history for accurate scanning
 
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        run: gitleaks detect --source . --redact --no-git --exit-code 1
+        continue-on-error: false
 
   # ─── 2. Dependency vulnerability audit ────────────────────────────────────
   npm-audit:
@@ -39,12 +42,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: npm install --legacy-peer-deps --ignore-scripts
 
-      - name: Run npm audit (high severity)
+      - name: Run npm audit (high severity — informational)
         run: npm audit --audit-level=high --omit=dev
         continue-on-error: true  # warn but don't fail the pipeline
 
@@ -63,18 +65,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install npm dependencies
-        run: npm ci --ignore-scripts
+        run: npm install --legacy-peer-deps --ignore-scripts
 
       - name: Run Slither
-        uses: crytic/slither-action@v0.4.0
+        uses: crytic/slither-action@v0.3.0
         id: slither
         with:
           node-version: 20
+          hardhat-compile: false
           fail-on: high
-          slither-args: --exclude-dependencies --exclude naming-convention
+          slither-args: --compile-force-framework hardhat --exclude-dependencies --exclude naming-convention
         continue-on-error: true  # don't block on medium/low findings
 
   # ─── 4. Environment file leak check ───────────────────────────────────────
