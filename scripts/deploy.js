@@ -80,6 +80,10 @@ async function main() {
   console.log("  reputation.setIdentity ✓");
 
   // ─── 7. Post-deployment sanity checks ────────────────────
+  // FIX L-05 (documentation): Monad Mainnet chain ID is 143 per the official
+  // Monad docs and RPC endpoint. If this ever changes, update hardhat.config.js
+  // and frontend/src/config/chains.js together.
+  // FIX LOW-2 (deploy): Added full sanity check suite — all 5 cross-contract wires verified.
   console.log("\nRunning sanity checks...");
   const factoryIdentity = await factory.identity();
   if (factoryIdentity.toLowerCase() !== identityAddr.toLowerCase()) {
@@ -91,6 +95,21 @@ async function main() {
     throw new Error("SANITY FAIL: escrow.factory() does not match factoryAddr");
   }
   console.log("  escrow.factory() ✓");
+  const registryFactory = await registry.factory();
+  if (registryFactory.toLowerCase() !== factoryAddr.toLowerCase()) {
+    throw new Error("SANITY FAIL: registry.factory() does not match factoryAddr");
+  }
+  console.log("  registry.factory() ✓");
+  const reputationFactory = await reputation.factory();
+  if (reputationFactory.toLowerCase() !== factoryAddr.toLowerCase()) {
+    throw new Error("SANITY FAIL: reputation.factory() does not match factoryAddr");
+  }
+  console.log("  reputation.factory() ✓");
+  const reputationIdentity = await reputation.identity();
+  if (reputationIdentity.toLowerCase() !== identityAddr.toLowerCase()) {
+    throw new Error("SANITY FAIL: reputation.identity() does not match identityAddr");
+  }
+  console.log("  reputation.identity() ✓");
 
   // ─── 8. Save deployment JSON ─────────────────────────────
   const deploymentData = {

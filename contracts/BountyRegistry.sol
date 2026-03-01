@@ -43,6 +43,8 @@ contract BountyRegistry {
         // V3 Fair System: grace period tracking
         bool      gracePeriodExpired; // true if poster rejected after the 2-hour grace window
         uint256   submissionStake;    // hunter's stake amount for this submission
+        // FIX C-01: track when poster actually rejected, so dispute window is fair
+        uint256   rejectedAt;         // timestamp of rejectSubmission() call; 0 if not yet rejected
     }
 
     address public owner;
@@ -152,7 +154,9 @@ contract BountyRegistry {
         Submission storage s = _submissions[submissionId];
         require(s.id != 0, "Registry: not found");
         require(s.status == SubStatus.PENDING, "Registry: not pending");
-        s.status = SubStatus.REJECTED;
+        s.status     = SubStatus.REJECTED;
+        // FIX C-01: record rejection timestamp so dispute window is measured from here
+        s.rejectedAt = block.timestamp;
     }
 
     function markGracePeriodExpired(uint256 submissionId) external onlyFactory {
@@ -217,7 +221,12 @@ contract BountyRegistry {
         if (offset >= total) return (new Bounty[](0), total);
         uint256 size = (total - offset) < limit ? (total - offset) : limit;
         result = new Bounty[](size);
-        for (uint256 i = 0; i < size; i++) result[i] = _bounties[total - offset - i];
+        // FIX M-02: IDs are 1-based; compute index as (total - offset - i) which is always >= 1
+        // when offset < total and i < size = (total - offset), so no underflow to ID 0.
+        for (uint256 i = 0; i < size; i++) {
+            uint256 id = total - offset - i; // guaranteed >= 1
+            result[i] = _bounties[id];
+        }
     }
 
     function getActiveBounties(uint256 offset, uint256 limit)

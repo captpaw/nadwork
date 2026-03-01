@@ -42,6 +42,17 @@ contract BountyFactory {
     // Tracks total ETH reserved for pending dispute refunds so sweep() never touches it
     uint256 private _totalPendingRefunds;
 
+    // ── FIX H-01: Cancel compensation pull-payment ───────────────────────────
+    // Replaces the push-payment loop in cancelBounty that was vulnerable to DoS
+    // by a malicious smart contract hunter that reverts on receive().
+    mapping(address => uint256) public pendingCancelComps;
+    uint256 private _totalPendingCancelComps;
+
+    // ── FIX H-02: Timeout payout pull-payment ────────────────────────────────
+    // Replaces the push-payment loop in claimTimeout that was vulnerable to DoS.
+    mapping(address => uint256) public pendingTimeoutPayouts;
+    uint256 private _totalPendingTimeoutPayouts;
+
     // ── Events ────────────────────────────────────────────────────────────────
     event BountyCreated(uint256 indexed bountyId, address indexed poster, uint256 reward);
     event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter);
@@ -53,6 +64,8 @@ contract BountyFactory {
     event DisputeRaised(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter);
     event DisputeResolved(uint256 indexed bountyId, bool inFavorOfHunters);
     event BountyFeatured(uint256 indexed bountyId);
+    // FIX L-03: distinguish owner-comped featuring from paid featuring for transparency
+    event BountyFeaturedByOwner(uint256 indexed bountyId);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event IdentitySet(address indexed identity);
     event DisputeRefundPending(address indexed hunter, uint256 amount);
@@ -61,6 +74,10 @@ contract BountyFactory {
     event PosterStakeSlashedOnCancel(uint256 indexed bountyId, uint256 amount);
     // FIX-9: emitted when bounty transitions to REVIEWING state after deadline
     event BountyEnteredReview(uint256 indexed bountyId, uint256 pendingCount);
+    // FIX H-01: pull-payment for cancel compensation
+    event CancelCompPending(uint256 indexed bountyId, address indexed hunter, uint256 amount);
+    // FIX H-02: pull-payment for timeout payout
+    event TimeoutPayoutPending(uint256 indexed bountyId, address indexed hunter, uint256 amount);
 
     // ── Modifiers ─────────────────────────────────────────────────────────────
     modifier onlyOwner()     { require(msg.sender == owner, "Factory: not owner"); _; }
@@ -250,12 +267,29 @@ contract BountyFactory {
             winners[i] = s.hunter;
         }
 
+        // FIX H-03: validate ranks array — must be unique values 1..submissionIds.length
+        // Ranks determine which prizeWeight slot a winner receives; rank 1 = highest prize.
+        {
+            uint256 len = submissionIds.length;
+            bool[] memory seen = new bool[](len + 1); // index 1..len
+            for (uint256 i = 0; i < len; i++) {
+                uint8 r = ranks[i];
+                require(r >= 1 && r <= len, "Factory: rank out of range");
+                require(!seen[r], "Factory: duplicate rank");
+                seen[r] = true;
+            }
+        }
+
+        // Build effective weights: winner with rank r gets prizeWeights[r-1].
+        // If fewer winners than winnerCount, redistribute equally (ranks ignored for weights).
         uint8[] memory effectiveWeights = new uint8[](submissionIds.length);
         if (submissionIds.length == b.winnerCount) {
+            // Assign weights by rank: rank 1 → prizeWeights[0], rank 2 → prizeWeights[1], etc.
             for (uint256 i = 0; i < submissionIds.length; i++) {
-                effectiveWeights[i] = b.prizeWeights[i];
+                effectiveWeights[i] = b.prizeWeights[ranks[i] - 1];
             }
         } else {
+            // Partial winners — equal split, ranks are still recorded for display
             uint8 each      = uint8(100 / submissionIds.length);
             uint8 remainder = uint8(100 - each * uint8(submissionIds.length));
             for (uint256 i = 0; i < submissionIds.length; i++) {
@@ -328,8 +362,10 @@ contract BountyFactory {
         require(s.hunter == msg.sender,                           "Factory: not your submission");
         require(s.status == BountyRegistry.SubStatus.REJECTED,   "Factory: not rejected");
         require(!s.disputed,                                      "Factory: already disputed");
-        // Only callable once grace period has expired (stake wasn't auto-refunded because it was inGrace at reject time)
-        require(block.timestamp >= s.submittedAt + GRACE_PERIOD_REJECT, "Factory: grace period active - dispute instead");
+        // FIX C-01: Use rejectedAt for consistency — grace period is GRACE_PERIOD_REJECT
+        // after the poster actually called rejectSubmission(), not after submission time.
+        require(s.rejectedAt > 0,                                                       "Factory: not rejected yet");
+        require(block.timestamp >= s.rejectedAt + GRACE_PERIOD_REJECT,                  "Factory: grace period active - dispute instead");
         escrow.refundSubmissionStake(bountyId, msg.sender);
     }
 
@@ -369,17 +405,24 @@ contract BountyFactory {
                 if (totalComp > b.totalReward) totalComp = b.totalReward;
                 require(msg.value >= totalComp, "Factory: insufficient comp");
 
+                // FIX H-01: Use pull-payment pattern instead of push-payment loop.
+                // A push-payment loop is vulnerable to DoS: a malicious hunter smart
+                // contract that reverts on receive() would block the entire cancel.
+                // Instead, queue each compensation so hunters claim individually.
+                // FIX L-01: Distribute dust (from integer division) to the last valid hunter
+                // so no wei is silently locked in the contract.
                 uint256 eachMON = totalComp / validSubCount;
-
-                // Pay hunters first using msg.value
-                uint256 paid = 0;
+                uint256 dust    = totalComp - (eachMON * validSubCount);
+                uint256 validIdx = 0;
                 for (uint256 i = 0; i < subs.length; i++) {
                     bool isValid = subs[i].status == BountyRegistry.SubStatus.PENDING ||
                                   (subs[i].status == BountyRegistry.SubStatus.REJECTED && subs[i].gracePeriodExpired);
-                    if (isValid && eachMON > 0) {
-                        (bool ok,) = subs[i].hunter.call{value: eachMON, gas: 100_000}("");
-                        require(ok, "Factory: comp transfer failed");
-                        paid += eachMON;
+                    if (isValid) {
+                        validIdx++;
+                        uint256 amount = (validIdx == validSubCount) ? eachMON + dust : eachMON;
+                        pendingCancelComps[subs[i].hunter]  += amount;
+                        _totalPendingCancelComps            += amount;
+                        emit CancelCompPending(bountyId, subs[i].hunter, amount);
                     }
                 }
 
@@ -401,9 +444,9 @@ contract BountyFactory {
                 registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.CANCELLED);
                 escrow.refund(bountyId);
 
-                // Refund excess MON to poster
-                if (msg.value > paid) {
-                    (bool ok2,) = msg.sender.call{value: msg.value - paid, gas: 100_000}("");
+                // Refund excess MON to poster (amount above totalComp)
+                if (msg.value > totalComp) {
+                    (bool ok2,) = msg.sender.call{value: msg.value - totalComp, gas: 100_000}("");
                     require(ok2, "Factory: excess refund failed");
                 }
             }
@@ -432,7 +475,8 @@ contract BountyFactory {
     // ── TRANSITION TO REVIEWING (FIX-9: completes the state machine) ────────────
     // Can be called by anyone once deadline has passed and pending submissions exist.
     // Signals on-chain that the poster's review window has begun.
-    function transitionToReviewing(uint256 bountyId) external {
+    // FIX M-05: added whenNotPaused so this is blocked during emergency pause (consistent with all other state-changing functions)
+    function transitionToReviewing(uint256 bountyId) external whenNotPaused {
         BountyRegistry.Bounty memory b = registry.getBounty(bountyId);
         require(b.status == BountyRegistry.BountyStatus.ACTIVE,  "Factory: not active");
         require(block.timestamp >= b.deadline,                   "Factory: deadline not reached");
@@ -485,7 +529,23 @@ contract BountyFactory {
             }
 
         registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.EXPIRED);
-        escrow.claimTimeout(bountyId, pendingHunters);
+
+        // FIX H-02: Use pull-payment pattern for timeout payouts.
+        // claimTimeoutPullable() pays fee to treasury and sends the entire hunter pool
+        // to this factory contract (for native bounties). We queue each hunter's share.
+        (uint256 payoutPerHunter, uint256 hunterPool) = escrow.claimTimeoutPullable(bountyId, pendingHunters);
+        if (hunterPool > 0) {
+            // Native bounty: queue pull-payments; distribute dust to last hunter
+            uint256 allocated = payoutPerHunter * pendingHunters.length;
+            uint256 dust = hunterPool - allocated;
+            for (uint256 i = 0; i < pendingHunters.length; i++) {
+                uint256 amount = (i == pendingHunters.length - 1) ? payoutPerHunter + dust : payoutPerHunter;
+                pendingTimeoutPayouts[pendingHunters[i]] += amount;
+                _totalPendingTimeoutPayouts              += amount;
+                emit TimeoutPayoutPending(bountyId, pendingHunters[i], amount);
+            }
+        }
+        // If hunterPool == 0, it was an ERC20 bounty handled directly in escrow (push-payment).
 
         // V3: refund submission stakes to pending hunters
         for (uint256 i = 0; i < pendingHunters.length; i++) {
@@ -496,7 +556,30 @@ contract BountyFactory {
         address[] memory empty = new address[](0);
         escrow.slashPosterStake(bountyId, empty, 0);
 
+        // FIX L-02: Record poster reputation for ghosting (was missing before)
+        reputation.recordCancelWithSubmissions(b.poster);
+
         emit TimeoutTriggered(bountyId, msg.sender);
+    }
+
+    // FIX H-02: Hunter claims their queued timeout payout
+    function claimTimeoutPayout() external nonReentrant {
+        uint256 amount = pendingTimeoutPayouts[msg.sender];
+        require(amount > 0, "Factory: no timeout payout pending");
+        pendingTimeoutPayouts[msg.sender] = 0;
+        _totalPendingTimeoutPayouts -= amount;
+        (bool ok,) = msg.sender.call{value: amount, gas: 100_000}("");
+        require(ok, "Factory: timeout payout failed");
+    }
+
+    // FIX H-01: Hunter claims their queued cancel compensation
+    function claimCancelComp() external nonReentrant {
+        uint256 amount = pendingCancelComps[msg.sender];
+        require(amount > 0, "Factory: no cancel comp pending");
+        pendingCancelComps[msg.sender] = 0;
+        _totalPendingCancelComps -= amount;
+        (bool ok,) = msg.sender.call{value: amount, gas: 100_000}("");
+        require(ok, "Factory: cancel comp transfer failed");
     }
 
     // ── DISPUTE MECHANISM ─────────────────────────────────────────────────────
@@ -512,8 +595,11 @@ contract BountyFactory {
         // FIX C3: dispute only valid while bounty is still in a live state, not after COMPLETED
         require(b.status == BountyRegistry.BountyStatus.ACTIVE ||
                 b.status == BountyRegistry.BountyStatus.REVIEWING,          "Factory: bounty already settled");
-        // Dispute must be raised within the grace period
-        require(block.timestamp < s.submittedAt + GRACE_PERIOD_REJECT,      "Factory: dispute window expired");
+        // FIX C-01: Dispute window now measured from rejectedAt (when poster actually rejected),
+        // not from submittedAt. Previously, a poster could wait 1h59m then reject, leaving the
+        // hunter only 1 minute to dispute. Now hunter always gets a full GRACE_PERIOD_REJECT window.
+        require(s.rejectedAt > 0,                                            "Factory: not yet rejected");
+        require(block.timestamp < s.rejectedAt + GRACE_PERIOD_REJECT,       "Factory: dispute window expired");
 
         registry.markDisputed(submissionId);
         registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.DISPUTED);
@@ -539,14 +625,18 @@ contract BountyFactory {
 
         if (inFavorOfHunters) {
             BountyRegistry.Submission[] memory subs = registry.getBountySubmissions(bountyId);
+            // FIX C-02: Only include submissions that are actively disputed (disputed == true).
+            // The old filter (status != APPROVED) incorrectly included all non-approved
+            // submissions — REJECTED-but-not-disputed, PENDING, etc. — causing non-disputing
+            // hunters to receive reward from a dispute they had no part in.
             uint256 eligibleCount = 0;
             for (uint256 i = 0; i < subs.length; i++)
-                if (subs[i].status != BountyRegistry.SubStatus.APPROVED) eligibleCount++;
+                if (subs[i].disputed) eligibleCount++;
 
             address[] memory eligible = new address[](eligibleCount);
             uint256 idx = 0;
             for (uint256 i = 0; i < subs.length; i++)
-                if (subs[i].status != BountyRegistry.SubStatus.APPROVED)
+                if (subs[i].disputed)
                     eligible[idx++] = subs[i].hunter;
 
             registry.updateBountyStatus(bountyId, BountyRegistry.BountyStatus.CANCELLED);
@@ -615,7 +705,15 @@ contract BountyFactory {
             }
         }
         registry.setFeatured(bountyId, featured);
-        if (featured) emit BountyFeatured(bountyId);
+        if (featured) {
+            // FIX L-03: emit distinct event so on-chain observers can differentiate
+            // owner-comped featuring (no fee paid) from paid featuring.
+            if (msg.sender == owner) {
+                emit BountyFeaturedByOwner(bountyId);
+            } else {
+                emit BountyFeatured(bountyId);
+            }
+        }
     }
 
     // ── VIEW: get submission stake required for a bounty ─────────────────────
@@ -633,9 +731,9 @@ contract BountyFactory {
     }
 
     // ── ADMIN: sweep accumulated fees (denied dispute deposits, etc.) ───────────
-    // FIX-1: only sweeps balance NOT reserved for pending dispute refunds
+    // Protects all three pull-payment pools: dispute refunds, cancel comps, timeout payouts.
     function sweep() external onlyOwner nonReentrant {
-        uint256 reserved  = _totalPendingRefunds;
+        uint256 reserved  = _totalPendingRefunds + _totalPendingCancelComps + _totalPendingTimeoutPayouts;
         uint256 bal       = address(this).balance;
         require(bal > reserved, "Factory: nothing to sweep");
         uint256 sweepable = bal - reserved;

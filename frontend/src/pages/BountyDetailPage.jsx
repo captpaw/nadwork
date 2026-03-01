@@ -361,7 +361,13 @@ export default function BountyDetailPage({ bountyId }) {
   const handleReject = async (submissionId) => {
     if (!walletClient) { toast('Connect wallet first', 'warning'); return; }
     const subIdStr = String(submissionId);
-    if (!window.confirm('Reject this submission? The hunter\'s stake will be refunded. This action cannot be undone.')) return;
+    if (!window.confirm(
+      'Reject this submission?\n\n' +
+      'If this is within 2 hours of submission, the hunter\'s stake is held for 2 hours ' +
+      'and they may raise a dispute during that window. ' +
+      'After 2 hours, the stake is returned to the hunter automatically.\n\n' +
+      'This action cannot be undone.'
+    )) return;
     setRejecting(prev => new Set(prev).add(subIdStr));
     try {
       const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, walletClient);

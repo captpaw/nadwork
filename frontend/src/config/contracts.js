@@ -30,22 +30,28 @@ export const FACTORY_ABI = [
   'function transitionToReviewing(uint256) external',
   // V3 view helpers
   'function getSubmissionStake(uint256) view returns (uint256)',
-  'function getPosterStake(uint256) pure returns (uint256)',
-  // Constants (pure — Solidity public constant getters are pure, not view)
-  'function DISPUTE_DEPOSIT() pure returns (uint256)',
-  'function FEATURED_FEE() pure returns (uint256)',
-  'function CANCEL_COMP_BPS() pure returns (uint256)',
-  'function MAX_WINNERS() pure returns (uint8)',
-  'function POSTER_STAKE_BPS() pure returns (uint256)',
-  'function MIN_POSTER_STAKE() pure returns (uint256)',
-  'function SUBMISSION_STAKE_BPS() pure returns (uint256)',
-  'function MIN_SUBMISSION_STAKE() pure returns (uint256)',
-  'function MAX_SUBMISSION_STAKE() pure returns (uint256)',
-  'function MIN_REVIEW_WINDOW() pure returns (uint256)',
-  'function MAX_REVIEW_WINDOW() pure returns (uint256)',
-  'function GRACE_PERIOD_REJECT() pure returns (uint256)',
-  'function MIN_DURATION() pure returns (uint256)',
-  'function MAX_DURATION() pure returns (uint256)',
+  'function getPosterStake(uint256) view returns (uint256)',
+  // FIX L-04: Solidity public constant getters emit view state-mutability in ABI,
+  // not pure. Using pure can cause runtime errors with some ethers.js/viem versions.
+  'function DISPUTE_DEPOSIT() view returns (uint256)',
+  'function FEATURED_FEE() view returns (uint256)',
+  'function CANCEL_COMP_BPS() view returns (uint256)',
+  'function MAX_WINNERS() view returns (uint8)',
+  'function POSTER_STAKE_BPS() view returns (uint256)',
+  'function MIN_POSTER_STAKE() view returns (uint256)',
+  'function SUBMISSION_STAKE_BPS() view returns (uint256)',
+  'function MIN_SUBMISSION_STAKE() view returns (uint256)',
+  'function MAX_SUBMISSION_STAKE() view returns (uint256)',
+  'function MIN_REVIEW_WINDOW() view returns (uint256)',
+  'function MAX_REVIEW_WINDOW() view returns (uint256)',
+  'function GRACE_PERIOD_REJECT() view returns (uint256)',
+  'function MIN_DURATION() view returns (uint256)',
+  'function MAX_DURATION() view returns (uint256)',
+  // FIX H-01 + H-02: pull-payment claim functions
+  'function claimCancelComp() external',
+  'function claimTimeoutPayout() external',
+  'function pendingCancelComps(address) view returns (uint256)',
+  'function pendingTimeoutPayouts(address) view returns (uint256)',
   // Events
   'event BountyCreated(uint256 indexed bountyId, address indexed poster, uint256 reward)',
   'event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter)',
@@ -65,7 +71,8 @@ export const FACTORY_ABI = [
 
 // V3 tuple: added reviewDeadline, posterStake to Bounty; gracePeriodExpired, submissionStake to Submission
 const BOUNTY_TUPLE = 'tuple(uint256 id, address poster, string ipfsHash, string title, string category, uint8 bountyType, uint8 status, uint8 rewardType, address rewardToken, uint256 totalReward, uint8 winnerCount, uint8[] prizeWeights, uint256 deadline, uint256 createdAt, address[] winners, bool featured, uint256 submissionCount, uint256 reviewDeadline, uint256 posterStake)';
-const SUB_TUPLE    = 'tuple(uint256 id, uint256 bountyId, address hunter, string ipfsHash, uint8 status, uint8 rank, uint256 submittedAt, bool disputed, bool gracePeriodExpired, uint256 submissionStake)';
+// FIX C-01: added rejectedAt field to match updated BountyRegistry.Submission struct
+const SUB_TUPLE    = 'tuple(uint256 id, uint256 bountyId, address hunter, string ipfsHash, uint8 status, uint8 rank, uint256 submittedAt, bool disputed, bool gracePeriodExpired, uint256 submissionStake, uint256 rejectedAt)';
 
 export const REGISTRY_ABI = [
   `function getBounty(uint256) view returns (${BOUNTY_TUPLE})`,
@@ -108,6 +115,11 @@ export const IDENTITY_ABI = [
   'function confirmLink(address) external',
   'function unlinkWallet(address) external',
   'function claimPrimary(address) external',
+  'function initiateClaim(address) external',
+  'function finalizeClaim() external',
+  'function cancelClaim() external',
+  'function getPendingClaim(address) view returns (uint256,address)',
+  'function getUsernameCooldownEnd(string) view returns (uint256)',
   'function getPrimary(address) view returns (address)',
   'function getIdentity(address) view returns (string,address,address[],uint256,uint256)',
   'function getUsername(address) view returns (string)',

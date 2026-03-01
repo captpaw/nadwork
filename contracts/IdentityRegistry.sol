@@ -50,9 +50,27 @@ contract IdentityRegistry {
     // wallet B was proposed by wallet A → _proposedBy[B] = A
     mapping(address => address) private _proposedBy;
 
+    // FIX H-04: timelock for claimPrimary
+    // linked wallet → timestamp when initiateClaim() was called
+    mapping(address => uint256) private _claimInitiatedAt;
+    // linked wallet → the lostPrimary it intends to take over
+    mapping(address => address) private _claimTargetPrimary;
+
+    // FIX M-03: username cooldown — freed username → timestamp it was cleared
+    mapping(string => uint256) private _usernameFreedAt;
+
     // ── Constants ─────────────────────────────────────────────────────────────
 
     uint256 public constant MAX_LINKED_WALLETS = 1;
+
+    // FIX H-04: timelock for claimPrimary to prevent instant identity theft
+    // if a linked wallet is compromised. Original primary has this window to
+    // unlink the attacker's wallet before the claim is finalized.
+    uint256 public constant CLAIM_PRIMARY_TIMELOCK = 3 days;
+
+    // FIX M-03: cooldown after adminClearUsername before the freed name can be reclaimed.
+    // Prevents admin from clearing then immediately gifting the name to someone else.
+    uint256 public constant USERNAME_COOLDOWN = 90 days;
 
     // ── Events ────────────────────────────────────────────────────────────────
 
@@ -62,6 +80,8 @@ contract IdentityRegistry {
     event WalletLinkCancelled(address indexed primary, address indexed cancelled);
     event WalletLinked(address indexed primary, address indexed linked);
     event WalletUnlinked(address indexed primary, address indexed removed);
+    event PrimaryClaimInitiated(address indexed claimant, address indexed targetPrimary, uint256 claimableAfter);
+    event PrimaryClaimCancelled(address indexed claimant, address indexed targetPrimary);
     event PrimaryClaimed(address indexed newPrimary, address indexed oldPrimary);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
@@ -108,6 +128,12 @@ contract IdentityRegistry {
         string memory lower = _toLower(username);
         require(_isValidUsername(lower), "Identity: invalid characters (a-z, 0-9, hyphen only)");
         require(_usernameTaken[lower] == address(0), "Identity: username taken");
+        // FIX M-03: enforce on-chain 90-day cooldown after adminClearUsername
+        // to prevent admin from clearing and immediately gifting a name to another party.
+        require(
+            _usernameFreedAt[lower] == 0 || block.timestamp >= _usernameFreedAt[lower] + USERNAME_COOLDOWN,
+            "Identity: username in cooldown (90 days after admin clear)"
+        );
 
         _usernameTaken[lower]          = caller;
         _identities[caller].username   = lower;
@@ -235,29 +261,82 @@ contract IdentityRegistry {
     // ── Primary Recovery ──────────────────────────────────────────────────────
 
     /**
-     * @notice If your old primary wallet is lost, use a pre-linked backup wallet
-     *         to claim primary status. After this call, msg.sender becomes the
-     *         new primary wallet for the identity. ReputationRegistry lookups
-     *         will use msg.sender as the canonical address going forward, while
-     *         all historical on-chain data from the old primary is still accessible
-     *         via its raw address.
+     * @notice FIX H-04: Step 1 of 2 — Initiate a primary claim with a timelock.
      *
-     *         Requires: msg.sender was previously linked to lostPrimary via
-     *         proposeLink + confirmLink.
+     *         If your old primary wallet is lost, use a pre-linked backup wallet to
+     *         start the claim process. After CLAIM_PRIMARY_TIMELOCK (3 days), call
+     *         finalizeClaim() to complete the transfer.
+     *
+     *         The 3-day window gives the original primary wallet time to react: if
+     *         it was not actually lost (attacker used a compromised linked wallet),
+     *         the original primary can call unlinkWallet() to cancel the claim before
+     *         it is finalized.
      *
      * @param lostPrimary The old primary wallet address to take over from.
      */
-    function claimPrimary(address lostPrimary) external {
+    function initiateClaim(address lostPrimary) external {
         require(lostPrimary != address(0), "Identity: zero address");
         require(_primaryOf[msg.sender] == lostPrimary, "Identity: not linked to that wallet");
+        require(_claimInitiatedAt[msg.sender] == 0, "Identity: claim already pending");
+
+        _claimInitiatedAt[msg.sender]    = block.timestamp;
+        _claimTargetPrimary[msg.sender]  = lostPrimary;
+
+        emit PrimaryClaimInitiated(msg.sender, lostPrimary, block.timestamp + CLAIM_PRIMARY_TIMELOCK);
+    }
+
+    /**
+     * @notice Cancel a pending primary claim initiated by msg.sender.
+     *         Can also be called by the original primary wallet to cancel an
+     *         incoming claim (e.g. if they detect an attacker initiated a claim).
+     */
+    function cancelClaim() external {
+        address claimant;
+        if (_claimTargetPrimary[msg.sender] != address(0)) {
+            // Caller is the claimant cancelling their own claim
+            claimant = msg.sender;
+        } else {
+            // Caller is the target primary — find the claimant among linked wallets
+            address[] storage lw = _identities[msg.sender].linkedWallets;
+            for (uint256 i = 0; i < lw.length; i++) {
+                if (_claimTargetPrimary[lw[i]] == msg.sender) {
+                    claimant = lw[i];
+                    break;
+                }
+            }
+            require(claimant != address(0), "Identity: no pending claim against this wallet");
+        }
+        address target = _claimTargetPrimary[claimant];
+        delete _claimInitiatedAt[claimant];
+        delete _claimTargetPrimary[claimant];
+        emit PrimaryClaimCancelled(claimant, target);
+    }
+
+    /**
+     * @notice Step 2 of 2 — Finalize the primary claim after the timelock expires.
+     *
+     *         After this call, msg.sender becomes the new primary wallet for the
+     *         identity. ReputationRegistry lookups will use msg.sender as the
+     *         canonical address going forward.
+     *
+     *         Requires: initiateClaim() was called at least CLAIM_PRIMARY_TIMELOCK ago
+     *         and the link was not cancelled by the original primary in the meantime.
+     */
+    function finalizeClaim() external {
+        require(_claimInitiatedAt[msg.sender] > 0,                                         "Identity: no pending claim");
+        require(block.timestamp >= _claimInitiatedAt[msg.sender] + CLAIM_PRIMARY_TIMELOCK, "Identity: timelock not expired");
+
+        address lostPrimary = _claimTargetPrimary[msg.sender];
+        require(_primaryOf[msg.sender] == lostPrimary, "Identity: link was removed during timelock");
+
+        // Clear timelock state
+        delete _claimInitiatedAt[msg.sender];
+        delete _claimTargetPrimary[msg.sender];
 
         // The caller is now its own primary
         _primaryOf[msg.sender] = address(0);
 
         // Transfer username (if any) to the new primary.
-        // The username is immutable once set, so we only re-point the lookup mapping
-        // and copy it to the new primary record. The old record is left as-is on-chain
-        // (history is preserved), but future lookups will resolve to msg.sender.
         string memory uname = _identities[lostPrimary].username;
         if (bytes(uname).length > 0) {
             _usernameTaken[uname]            = msg.sender;
@@ -272,20 +351,68 @@ contract IdentityRegistry {
         _identities[msg.sender].updatedAt     = block.timestamp;
 
         // Transfer all remaining linked wallets from lostPrimary to msg.sender.
-        // This prevents orphan wallets whose _primaryOf still points to lostPrimary.
         address[] storage lw = _identities[lostPrimary].linkedWallets;
         uint256 len = lw.length;
         for (uint256 i = 0; i < len; i++) {
             address w = lw[i];
             if (w != msg.sender) {
-                // Reassign this wallet's primary to msg.sender
                 _primaryOf[w] = msg.sender;
                 _identities[msg.sender].linkedWallets.push(w);
             }
         }
-        // Clear the old primary's linked wallet list
         delete _identities[lostPrimary].linkedWallets;
-        // FIX M-SC-5: Clear stale username on old primary to prevent stale lookups
+        if (bytes(uname).length > 0) {
+            delete _identities[lostPrimary].username;
+        }
+
+        emit PrimaryClaimed(msg.sender, lostPrimary);
+    }
+
+    /**
+     * @notice Legacy single-step claimPrimary — kept for backward compatibility
+     *         with existing frontend calls. Now internally delegates to the two-step
+     *         flow only if the timelock has already elapsed (e.g. for migration paths).
+     *         For new usage, prefer initiateClaim() + finalizeClaim().
+     * @dev    This function now ALWAYS requires a pending initiateClaim. It no longer
+     *         allows instant primary takeover. Old callers who relied on instant
+     *         claiming will need to call initiateClaim() 3 days before finalizeClaim().
+     */
+    function claimPrimary(address lostPrimary) external {
+        require(lostPrimary != address(0), "Identity: zero address");
+        require(_primaryOf[msg.sender] == lostPrimary, "Identity: not linked to that wallet");
+        // Enforce timelock: claimPrimary now requires a prior initiateClaim()
+        require(_claimInitiatedAt[msg.sender] > 0,                                         "Identity: must call initiateClaim() first");
+        require(block.timestamp >= _claimInitiatedAt[msg.sender] + CLAIM_PRIMARY_TIMELOCK, "Identity: timelock not expired - wait 3 days after initiateClaim()");
+        require(_claimTargetPrimary[msg.sender] == lostPrimary,                            "Identity: pending claim is for a different primary");
+
+        // Delegate to finalizeClaim logic
+        delete _claimInitiatedAt[msg.sender];
+        delete _claimTargetPrimary[msg.sender];
+
+        _primaryOf[msg.sender] = address(0);
+
+        string memory uname = _identities[lostPrimary].username;
+        if (bytes(uname).length > 0) {
+            _usernameTaken[uname]            = msg.sender;
+            _identities[msg.sender].username = uname;
+        }
+
+        _identities[msg.sender].createdAt    = _identities[lostPrimary].createdAt > 0
+            ? _identities[lostPrimary].createdAt
+            : block.timestamp;
+        _identities[msg.sender].primaryWallet = msg.sender;
+        _identities[msg.sender].updatedAt     = block.timestamp;
+
+        address[] storage lw = _identities[lostPrimary].linkedWallets;
+        uint256 len = lw.length;
+        for (uint256 i = 0; i < len; i++) {
+            address w = lw[i];
+            if (w != msg.sender) {
+                _primaryOf[w] = msg.sender;
+                _identities[msg.sender].linkedWallets.push(w);
+            }
+        }
+        delete _identities[lostPrimary].linkedWallets;
         if (bytes(uname).length > 0) {
             delete _identities[lostPrimary].username;
         }
@@ -375,6 +502,24 @@ contract IdentityRegistry {
     }
 
     /**
+     * @notice FIX H-04: Get the timestamp when a claimant initiated a primary claim,
+     *         and the target primary. Returns (0, address(0)) if no pending claim.
+     */
+    function getPendingClaim(address claimant) external view returns (uint256 initiatedAt, address targetPrimary) {
+        return (_claimInitiatedAt[claimant], _claimTargetPrimary[claimant]);
+    }
+
+    /**
+     * @notice FIX M-03: Returns when a freed username becomes reclaimable.
+     *         Returns 0 if the name was never cleared by admin (no cooldown applies).
+     */
+    function getUsernameCooldownEnd(string calldata username) external view returns (uint256) {
+        string memory lower = _toLower(username);
+        if (_usernameFreedAt[lower] == 0) return 0;
+        return _usernameFreedAt[lower] + USERNAME_COOLDOWN;
+    }
+
+    /**
      * @notice Reverse lookup — get the primary wallet that proposed to link this address.
      *         Used by the backup wallet to auto-detect its own invitation without needing
      *         to know the primary's address in advance.
@@ -400,6 +545,8 @@ contract IdentityRegistry {
         delete _usernameTaken[uname];
         _identities[primary].username  = "";
         _identities[primary].updatedAt = block.timestamp;
+        // FIX M-03: record when this username was freed so the 90-day cooldown is enforced on-chain
+        _usernameFreedAt[uname] = block.timestamp;
         emit UsernameAdminCleared(primary, uname);
     }
 

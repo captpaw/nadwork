@@ -206,6 +206,7 @@ contract NadWorkEscrow {
     }
 
     // Timeout: split equally among pending hunters (factory controls timing checks)
+    // Legacy push-payment version — kept for direct use if all hunters are EOAs
     function claimTimeout(uint256 bountyId, address[] calldata hunters)
         external onlyFactory nonReentrant
     {
@@ -228,6 +229,60 @@ contract NadWorkEscrow {
         }
 
         emit TimeoutClaimed(bountyId, hunters, eachAmount);
+    }
+
+    // FIX H-02: Pull-payment variant — marks record as released, pays fee to treasury,
+    // but returns the per-hunter amount for factory to queue rather than push.
+    // The factory is responsible for queueing pendingTimeoutPayouts[hunter] += perHunter.
+    // Total payout pool (after fee) stored in _timeoutPools for dust calculation.
+    mapping(uint256 => uint256) private _timeoutPools;
+
+    // FIX H-02: Pull-payment variant.
+    // Marks escrow as released, pays fee to treasury, then transfers the entire hunter
+    // pool to the factory (msg.sender = factory) so the factory can queue pending payouts.
+    // The factory is responsible for distributing to individual hunters via pendingTimeoutPayouts.
+    // Only works for NATIVE bounties — ERC20 timeout still uses push (hunters are less likely
+    // to be malicious smart contracts for ERC20, and ERC20 transfer failures are non-reverting).
+    function claimTimeoutPullable(uint256 bountyId, address[] calldata hunters)
+        external onlyFactory nonReentrant
+        returns (uint256 perHunterAmount, uint256 hunterPool)
+    {
+        require(hunters.length > 0, "Escrow: no hunters");
+        EscrowRecord storage r = _records[bountyId];
+        require(r.amount > 0,               "Escrow: not found");
+        require(!r.released && !r.refunded, "Escrow: already settled");
+
+        r.released = true;
+        uint256 total = r.amount;
+        uint256 fee   = (total * FEE_BPS) / BPS_DENOM;
+        hunterPool    = total - fee;
+
+        if (r.rewardToken == address(0)) {
+            // Native: pay fee, then send entire hunter pool to factory for pull-payment
+            _safeTransferMON(treasury, fee);
+            _safeTransferMON(factory, hunterPool);
+        } else {
+            // ERC20: fall back to push-payment (safe for ERC20 since transfer failures aren't reentrancy DoS)
+            bool ok = _transferERC20(r.rewardToken, treasury, fee);
+            require(ok, "Escrow: ERC20 fee transfer failed");
+            uint256 each = hunterPool / hunters.length;
+            uint256 dust = hunterPool - each * hunters.length;
+            for (uint256 i = 0; i < hunters.length; i++) {
+                uint256 payout = (i == hunters.length - 1) ? each + dust : each;
+                if (payout > 0) {
+                    bool tokOk = _transferERC20(r.rewardToken, hunters[i], payout);
+                    require(tokOk, "Escrow: ERC20 payout failed");
+                }
+            }
+            hunterPool = 0; // signal to factory that ERC20 was handled directly
+        }
+
+        perHunterAmount = hunterPool > 0 ? hunterPool / hunters.length : 0;
+        emit TimeoutClaimed(bountyId, hunters, perHunterAmount);
+    }
+
+    function getTimeoutPool(uint256 bountyId) external view returns (uint256) {
+        return _timeoutPools[bountyId];
     }
 
     // Full refund to depositor (cancel with no submissions, expire with no submissions)

@@ -484,11 +484,17 @@ describe("cancelBounty — V3 (poster stake slash)", function () {
 
     await factory.connect(poster).cancelBounty(1, { value: compRequired + ETH(0.01) });
 
+    // FIX H-01: cancelBounty now uses pull-payment — hunter balance unchanged immediately.
+    // Hunter must call claimCancelComp() + submission stake was already in escrow.
     const hunter1After  = await ethers.provider.getBalance(hunter1.address);
     const treasuryAfter = await ethers.provider.getBalance(treasury.address);
 
     const halfStake = posterStake / 2n;
-    expect(hunter1After - hunter1Before).to.be.closeTo(compRequired + subStake + halfStake, ETH(0.001));
+    // Comp is queued (pull-payment)
+    expect(await factory.pendingCancelComps(hunter1.address)).to.equal(compRequired);
+    // Hunter immediately receives: subStake refund (escrow push) + 50% poster stake slash (escrow push)
+    expect(hunter1After - hunter1Before).to.be.closeTo(subStake + halfStake, ETH(0.001));
+    // Treasury gets the other 50% of poster stake
     expect(treasuryAfter - treasuryBefore).to.be.closeTo(halfStake, ETH(0.001));
     expect(await escrow.posterStakes(1)).to.equal(0n);
   });
@@ -584,9 +590,13 @@ describe("triggerTimeout — V3 (review deadline + poster stake slashed)", funct
     const treasuryAfter = await ethers.provider.getBalance(treasury.address);
     const hunter1After  = await ethers.provider.getBalance(hunter1.address);
 
-    // Hunter gets 97% of 0.5 = 0.485 + submission stake
-    expect(hunter1After - hunter1Before).to.be.closeTo(ETH(0.485) + stake, ETH(0.002));
-    // Treasury gets 3% of 0.5 = 0.015 + 100% of poster stake
+    // FIX H-02: triggerTimeout uses pull-payment. Hunter payout is queued, not pushed.
+    // Submission stake is still refunded immediately via escrow.refundSubmissionStake.
+    const pending = await factory.pendingTimeoutPayouts(hunter1.address);
+    expect(pending).to.be.closeTo(ETH(0.485), ETH(0.002));
+    // Hunter received submission stake refund immediately
+    expect(hunter1After - hunter1Before).to.be.closeTo(stake, ETH(0.002));
+    // Treasury gets 3% fee + 100% poster stake
     expect(treasuryAfter - treasuryBefore).to.be.closeTo(ETH(0.015) + posterStake, ETH(0.002));
   });
 
@@ -974,5 +984,558 @@ describe("transitionToReviewing() (FIX-9)", function () {
     await factory.connect(poster).approveWinners(1, [1], [1]);
     const bounty = await registry.getBounty(1);
     expect(bounty.status).to.equal(2n); // COMPLETED = 2
+  });
+
+  it("transitionToReviewing reverts when paused (FIX M-05)", async function () {
+    const { factory, owner, anyone } = await setupExpiredWithSub();
+    await factory.connect(owner).pause();
+    await expect(factory.connect(anyone).transitionToReviewing(1))
+      .to.be.revertedWith("Factory: paused");
+    await factory.connect(owner).unpause();
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX C-01: Dispute window from rejectedAt
+// ─────────────────────────────────────────────
+describe("FIX C-01: dispute window measured from rejectedAt", function () {
+  async function setupRejectedInGrace() {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "c01h");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    return ctx;
+  }
+
+  it("hunter has full 2h window after rejectedAt even if poster waited", async function () {
+    const { factory, hunter1, poster, registry } = await setupRejectedInGrace();
+    // Poster waits 1h 50m then rejects — old code would leave hunter with only 10 min
+    await time.increase(3600 + 3000); // 1h50m after submission
+    await factory.connect(poster).rejectSubmission(1, 1);
+    const sub = await registry.getSubmission(1);
+    expect(sub.rejectedAt).to.be.gt(0n);
+
+    // Hunter still has a full 2h window from rejectedAt
+    await time.increase(3600); // 1h after rejection — still within window
+    await expect(
+      factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) })
+    ).to.not.be.reverted;
+  });
+
+  it("dispute window expires 2h after rejectedAt", async function () {
+    const { factory, hunter1, poster } = await setupRejectedInGrace();
+    await factory.connect(poster).rejectSubmission(1, 1);
+    // Advance past the 2h dispute window from rejectedAt
+    await time.increase(2 * 3600 + 60);
+    await expect(
+      factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) })
+    ).to.be.revertedWith("Factory: dispute window expired");
+  });
+
+  it("withdrawRejectedStake also uses rejectedAt (FIX C-01)", async function () {
+    const { factory, hunter1, poster } = await setupRejectedInGrace();
+    await factory.connect(poster).rejectSubmission(1, 1);
+    // Cannot withdraw before 2h from rejectedAt
+    await expect(
+      factory.connect(hunter1).withdrawRejectedStake(1, 1)
+    ).to.be.revertedWith("Factory: grace period active - dispute instead");
+    // Can withdraw after 2h from rejectedAt
+    await time.increase(2 * 3600 + 60);
+    await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1)).to.not.be.reverted;
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX C-02: resolveDispute only rewards disputed submissions
+// ─────────────────────────────────────────────
+describe("FIX C-02: resolveDispute only pays hunters with disputed==true", function () {
+  it("pending submission hunter does NOT get reward when dispute resolved in favor", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "c02h1");
+    await registerUsername(identity, hunter2, "c02h2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake1 = calcSubStake(ETH(0.5), 15_000n);
+    const stake2 = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub1", { value: stake1 });
+    await factory.connect(hunter2).submitWork(1, "QmSub2", { value: stake2 });
+    // Reject hunter1 in grace period → hunter1 disputes
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    // Hunter2's submission is still PENDING (not involved in dispute)
+    const h2Before = await ethers.provider.getBalance(hunter2.address);
+    await factory.connect(owner).resolveDispute(1, true, hunter1.address);
+    const h2After = await ethers.provider.getBalance(hunter2.address);
+    // Hunter2 should NOT have received any reward from the dispute resolution
+    expect(h2After - h2Before).to.equal(0n);
+  });
+
+  it("only the disputing hunter receives reward when dispute won", async function () {
+    const ctx = await deployAll();
+    const { factory, owner, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "c02w1");
+    await registerUsername(identity, hunter2, "c02w2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake1 = calcSubStake(ETH(0.5), 15_000n);
+    const stake2 = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub1", { value: stake1 });
+    await factory.connect(hunter2).submitWork(1, "QmSub2", { value: stake2 });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    await factory.connect(owner).resolveDispute(1, true, hunter1.address);
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    // Hunter1 should receive some funds (reward pool split)
+    expect(h1After).to.be.gt(h1Before);
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX H-01: cancelBounty pull-payment (DoS resistance)
+// ─────────────────────────────────────────────
+describe("FIX H-01: cancelBounty pull-payment", function () {
+  async function setupCancelWithSub() {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "h01h");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    return ctx;
+  }
+
+  it("cancelBounty queues comp and does NOT push ETH immediately", async function () {
+    const { factory, poster, hunter1, escrow } = await setupCancelWithSub();
+    const comp = (ETH(0.5) * 200n) / 10_000n;
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    await factory.connect(poster).cancelBounty(1, { value: comp });
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    // Comp is NOT pushed — only submission stake + 50% poster stake slash are pushed immediately
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const posterStake = calcPosterStake(ETH(0.5));
+    const halfPosterStake = posterStake / 2n;
+    // Hunter immediately receives: stake refund + poster stake half
+    expect(h1After - h1Before).to.be.closeTo(stake + halfPosterStake, ETH(0.0005));
+    // pendingCancelComps should be exactly comp
+    expect(await factory.pendingCancelComps(hunter1.address)).to.equal(comp);
+  });
+
+  it("hunter claims cancel compensation via claimCancelComp()", async function () {
+    const { factory, poster, hunter1 } = await setupCancelWithSub();
+    const comp = (ETH(0.5) * 200n) / 10_000n;
+    await factory.connect(poster).cancelBounty(1, { value: comp });
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    const tx   = await factory.connect(hunter1).claimCancelComp();
+    const rcpt = await tx.wait();
+    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    expect(h1After - h1Before + gas).to.equal(comp);
+  });
+
+  it("double claim reverts", async function () {
+    const { factory, poster, hunter1 } = await setupCancelWithSub();
+    const comp = (ETH(0.5) * 200n) / 10_000n;
+    await factory.connect(poster).cancelBounty(1, { value: comp });
+    await factory.connect(hunter1).claimCancelComp();
+    await expect(factory.connect(hunter1).claimCancelComp())
+      .to.be.revertedWith("Factory: no cancel comp pending");
+  });
+
+  it("sweep() cannot steal cancel comp reserves (FIX H-01)", async function () {
+    const { factory, owner, poster, hunter1, anyone } = await setupCancelWithSub();
+    const comp = (ETH(0.5) * 200n) / 10_000n;
+    await factory.connect(poster).cancelBounty(1, { value: comp });
+    // Factory only holds comp amount — sweepable = 0
+    await expect(factory.connect(owner).sweep())
+      .to.be.revertedWith("Factory: nothing to sweep");
+    // Send extra ETH, now sweep works without touching comp
+    await anyone.sendTransaction({ to: await factory.getAddress(), value: ETH(0.05) });
+    await factory.connect(owner).sweep();
+    // Hunter can still claim their comp
+    await expect(factory.connect(hunter1).claimCancelComp()).to.not.be.reverted;
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX H-02: triggerTimeout pull-payment (DoS resistance)
+// ─────────────────────────────────────────────
+describe("FIX H-02: triggerTimeout pull-payment", function () {
+  async function setupTimeout() {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "h02h");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    // Advance past review deadline
+    await time.increase(ONE_DAY * 3 + ONE_DAY * 2 + 3600); // past deadline + review window
+    return ctx;
+  }
+
+  it("triggerTimeout queues payout and does NOT push ETH immediately", async function () {
+    const { factory, anyone, hunter1 } = await setupTimeout();
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    await factory.connect(anyone).triggerTimeout(1);
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    // Submission stake is refunded immediately (escrow push), but reward payout is queued
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    expect(h1After - h1Before).to.be.closeTo(stake, ETH(0.0001));
+    // pendingTimeoutPayouts should be non-zero (the reward portion)
+    expect(await factory.pendingTimeoutPayouts(hunter1.address)).to.be.gt(0n);
+  });
+
+  it("hunter claims timeout payout via claimTimeoutPayout()", async function () {
+    const { factory, anyone, hunter1 } = await setupTimeout();
+    await factory.connect(anyone).triggerTimeout(1);
+    const pending = await factory.pendingTimeoutPayouts(hunter1.address);
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    const tx   = await factory.connect(hunter1).claimTimeoutPayout();
+    const rcpt = await tx.wait();
+    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    expect(h1After - h1Before + gas).to.equal(pending);
+  });
+
+  it("double claim reverts", async function () {
+    const { factory, anyone, hunter1 } = await setupTimeout();
+    await factory.connect(anyone).triggerTimeout(1);
+    await factory.connect(hunter1).claimTimeoutPayout();
+    await expect(factory.connect(hunter1).claimTimeoutPayout())
+      .to.be.revertedWith("Factory: no timeout payout pending");
+  });
+
+  it("FIX L-02: triggerTimeout records poster reputation penalty", async function () {
+    const { factory, reputation, poster, anyone } = await setupTimeout();
+    const statsBefore = await reputation.getProjectStats(poster.address);
+    await factory.connect(anyone).triggerTimeout(1);
+    const statsAfter = await reputation.getProjectStats(poster.address);
+    expect(statsAfter.cancelCount).to.equal(statsBefore.cancelCount + 1n);
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX H-03: ranks[] validation in approveWinners
+// ─────────────────────────────────────────────
+describe("FIX H-03: ranks[] validation", function () {
+  async function setupTwoSubmissions() {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "h03h1");
+    await registerUsername(identity, hunter2, "h03h2");
+    const p = await defaultParams({ winnerCount: 2, prizeWeights: [60, 40] });
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "QmSub2", { value: stake });
+    return ctx;
+  }
+
+  it("reverts on duplicate ranks", async function () {
+    const { factory, poster } = await setupTwoSubmissions();
+    await expect(factory.connect(poster).approveWinners(1, [1, 2], [1, 1]))
+      .to.be.revertedWith("Factory: duplicate rank");
+  });
+
+  it("reverts on rank out of range", async function () {
+    const { factory, poster } = await setupTwoSubmissions();
+    await expect(factory.connect(poster).approveWinners(1, [1, 2], [1, 3]))
+      .to.be.revertedWith("Factory: rank out of range");
+  });
+
+  it("rank 1 maps to prizeWeights[0] (highest prize)", async function () {
+    const { factory, poster, hunter1, hunter2, escrow } = await setupTwoSubmissions();
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    const h2Before = await ethers.provider.getBalance(hunter2.address);
+    // Hunter1 gets rank 1 (60%), hunter2 gets rank 2 (40%)
+    await factory.connect(poster).approveWinners(1, [1, 2], [1, 2]);
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    const h2After = await ethers.provider.getBalance(hunter2.address);
+    // Hunter1 should receive more than hunter2
+    expect(h1After - h1Before).to.be.gt(h2After - h2Before);
+  });
+
+  it("rank order can be reversed — rank 2 submitter gets higher prize", async function () {
+    const { factory, poster, hunter1, hunter2 } = await setupTwoSubmissions();
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    const h2Before = await ethers.provider.getBalance(hunter2.address);
+    // Hunter1 gets rank 2 (40%), hunter2 gets rank 1 (60%)
+    await factory.connect(poster).approveWinners(1, [1, 2], [2, 1]);
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    const h2After = await ethers.provider.getBalance(hunter2.address);
+    // Hunter2 should now receive more
+    expect(h2After - h2Before).to.be.gt(h1After - h1Before);
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX H-04: claimPrimary timelock
+// ─────────────────────────────────────────────
+describe("FIX H-04: claimPrimary timelock (initiateClaim + finalizeClaim)", function () {
+  async function setupLinkedWallets() {
+    const ctx = await deployAll();
+    const { identity, hunter1, hunter2 } = ctx;
+    // hunter1 = primary, hunter2 = backup
+    await registerUsername(identity, hunter1, "h04p");
+    await identity.connect(hunter1).proposeLink(hunter2.address);
+    await identity.connect(hunter2).confirmLink(hunter1.address);
+    return ctx;
+  }
+
+  it("claimPrimary() reverts without prior initiateClaim()", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    await expect(identity.connect(hunter2).claimPrimary(hunter1.address))
+      .to.be.revertedWith("Identity: must call initiateClaim() first");
+  });
+
+  it("finalizeClaim() reverts before timelock expires", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    await identity.connect(hunter2).initiateClaim(hunter1.address);
+    await expect(identity.connect(hunter2).finalizeClaim())
+      .to.be.revertedWith("Identity: timelock not expired");
+  });
+
+  it("finalizeClaim() succeeds after 3 days", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    await identity.connect(hunter2).initiateClaim(hunter1.address);
+    await time.increase(3 * ONE_DAY + 60);
+    await expect(identity.connect(hunter2).finalizeClaim()).to.not.be.reverted;
+    expect(await identity.getPrimary(hunter2.address)).to.equal(hunter2.address);
+  });
+
+  it("emits PrimaryClaimInitiated with correct claimableAfter", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    const tx   = await identity.connect(hunter2).initiateClaim(hunter1.address);
+    const rcpt = await tx.wait();
+    const block = await ethers.provider.getBlock(rcpt.blockNumber);
+    await expect(tx)
+      .to.emit(identity, "PrimaryClaimInitiated")
+      .withArgs(hunter2.address, hunter1.address, BigInt(block.timestamp) + BigInt(3 * ONE_DAY));
+  });
+
+  it("original primary can cancel incoming claim via cancelClaim()", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    await identity.connect(hunter2).initiateClaim(hunter1.address);
+    // Original primary detects the claim and cancels it
+    await expect(identity.connect(hunter1).cancelClaim()).to.not.be.reverted;
+    await time.increase(3 * ONE_DAY + 60);
+    // finalizeClaim should now fail (no pending claim)
+    await expect(identity.connect(hunter2).finalizeClaim())
+      .to.be.revertedWith("Identity: no pending claim");
+  });
+
+  it("original primary can unlink the backup wallet to stop the claim", async function () {
+    const { identity, hunter1, hunter2 } = await setupLinkedWallets();
+    await identity.connect(hunter2).initiateClaim(hunter1.address);
+    // Primary unlinks hunter2 before timelock expires
+    await identity.connect(hunter1).unlinkWallet(hunter2.address);
+    await time.increase(3 * ONE_DAY + 60);
+    // finalizeClaim must fail because link was removed
+    await expect(identity.connect(hunter2).finalizeClaim())
+      .to.be.revertedWith("Identity: link was removed during timelock");
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX M-03: username cooldown after adminClearUsername
+// ─────────────────────────────────────────────
+describe("FIX M-03: username 90-day cooldown after admin clear", function () {
+  it("freed username cannot be immediately reclaimed", async function () {
+    const { identity, owner, hunter1, hunter2 } = await deployAll();
+    await registerUsername(identity, hunter1, "coold");
+    await identity.connect(owner).adminClearUsername(hunter1.address);
+    // hunter2 tries to claim immediately — should fail
+    await expect(identity.connect(hunter2).setUsername("coold"))
+      .to.be.revertedWith("Identity: username in cooldown (90 days after admin clear)");
+  });
+
+  it("freed username can be reclaimed after 90 days", async function () {
+    const { identity, owner, hunter1, hunter2 } = await deployAll();
+    await registerUsername(identity, hunter1, "coold2");
+    await identity.connect(owner).adminClearUsername(hunter1.address);
+    await time.increase(90 * ONE_DAY + 60);
+    await expect(identity.connect(hunter2).setUsername("coold2")).to.not.be.reverted;
+  });
+
+  it("getUsernameCooldownEnd returns correct timestamp", async function () {
+    const { identity, owner, hunter1 } = await deployAll();
+    await registerUsername(identity, hunter1, "coold3");
+    const clearTx   = await identity.connect(owner).adminClearUsername(hunter1.address);
+    const clearRcpt = await clearTx.wait();
+    const block     = await ethers.provider.getBlock(clearRcpt.blockNumber);
+    const cooldownEnd = await identity.getUsernameCooldownEnd("coold3");
+    expect(cooldownEnd).to.equal(BigInt(block.timestamp) + BigInt(90 * ONE_DAY));
+  });
+});
+
+// ─────────────────────────────────────────────
+// FIX L-01: cancel comp dust goes to last hunter
+// ─────────────────────────────────────────────
+describe("FIX L-01: cancel comp dust distribution", function () {
+  it("all comp wei is distributed — no dust locked in contract", async function () {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, hunter2, hunter3, identity } = ctx;
+    await registerUsername(identity, hunter1, "l01h1");
+    await registerUsername(identity, hunter2, "l01h2");
+    await registerUsername(identity, hunter3, "l01h3");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
+    await factory.connect(hunter3).submitWork(1, "QmS3", { value: stake });
+
+    // Total comp: 3 × (0.5 × 2%) = 0.03 MON
+    const totalComp = (ETH(0.5) * 200n) / 10_000n * 3n;
+    await factory.connect(poster).cancelBounty(1, { value: totalComp });
+
+    const c1 = await factory.pendingCancelComps(hunter1.address);
+    const c2 = await factory.pendingCancelComps(hunter2.address);
+    const c3 = await factory.pendingCancelComps(hunter3.address);
+    // All comp should be distributed (no orphan wei)
+    expect(c1 + c2 + c3).to.equal(totalComp);
+  });
+});
+
+// ─────────────────────────────────────────────
+// ERC20 bounty full flow
+// ─────────────────────────────────────────────
+describe("ERC20 bounty full flow", function () {
+  async function deployWithMockToken() {
+    const ctx = await deployAll();
+    // Deploy a minimal ERC20 mock
+    const MockERC20 = await ethers.getContractFactory("MockERC20");
+    const token = await MockERC20.deploy("Mock USD", "MUSD", 18);
+    await token.waitForDeployment();
+    // Mint to poster
+    await token.mint(ctx.poster.address, ETH(1000));
+    // ERC20 bounty: poster must approve the ESCROW (not factory) for transferFrom
+    // Factory calls escrow.depositERC20 which calls _transferFrom(token, depositor, escrow, amount)
+    await token.connect(ctx.poster).approve(await ctx.escrow.getAddress(), ETH(100));
+    return { ...ctx, token };
+  }
+
+  it("creates ERC20 bounty with MON poster stake", async function () {
+    const ctx = await deployWithMockToken();
+    const { factory, poster, registry, token } = ctx;
+    const now = await blockNow();
+    const totalReward = ETH(10);
+    const posterStake = calcPosterStake(totalReward);
+    await factory.connect(poster).createBounty(
+      "QmHash", "ERC20 Bounty", "dev",
+      1, // ERC20
+      await token.getAddress(),
+      totalReward, 1, [100],
+      now + ONE_DAY * 3,
+      { value: posterStake }
+    );
+    const bounty = await registry.getBounty(1);
+    expect(bounty.rewardType).to.equal(1n); // ERC20
+    expect(bounty.totalReward).to.equal(totalReward);
+  });
+
+  it("ERC20 bounty approveWinners pays winner in tokens", async function () {
+    const ctx = await deployWithMockToken();
+    const { factory, reputation, poster, hunter1, identity, token } = ctx;
+    // For 10 MON reward, hunter needs Tier 2 (at least one prior submission).
+    // Boost hunter1 to tier 2 by recording a prior win in reputation directly — or
+    // use a small bounty first to get hunter1 a submission recorded.
+    await registerUsername(identity, hunter1, "erc20w");
+
+    // Step 1: small bounty so hunter1 gets a prior submission (becomes Tier 2)
+    const now = await blockNow();
+    const smallReward = ETH(0.5);
+    const smallStake  = calcPosterStake(smallReward);
+    await factory.connect(poster).createBounty(
+      "QmSmall", "Small Bounty", "dev",
+      0, ethers.ZeroAddress, smallReward, 1, [100],
+      now + ONE_DAY * 3,
+      { value: smallReward + smallStake }
+    );
+    const subStakeSmall = calcSubStake(smallReward, 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSmallSub", { value: subStakeSmall });
+    await factory.connect(poster).approveWinners(1, [1], [1]);
+    // hunter1 now has 1 win → Tier 2
+
+    // Step 2: ERC20 bounty
+    const now2 = await blockNow();
+    const totalReward = ETH(10);
+    const posterStake = calcPosterStake(totalReward);
+    await ctx.token.connect(poster).approve(await ctx.escrow.getAddress(), ETH(100));
+    await factory.connect(poster).createBounty(
+      "QmHash", "ERC20 Bounty", "dev",
+      1, await token.getAddress(),
+      totalReward, 1, [100],
+      now2 + ONE_DAY * 3,
+      { value: posterStake }
+    );
+    const subStake = calcSubStake(totalReward, 10_000n); // tier 2: 1× multiplier
+    await factory.connect(hunter1).submitWork(2, "QmSub", { value: subStake });
+    const h1TokenBefore = await token.balanceOf(hunter1.address);
+    await factory.connect(poster).approveWinners(2, [2], [1]);
+    const h1TokenAfter = await token.balanceOf(hunter1.address);
+    // Hunter should have received 97% of 10 tokens
+    const expected = (totalReward * 9700n) / 10_000n;
+    expect(h1TokenAfter - h1TokenBefore).to.equal(expected);
+  });
+});
+
+// ─────────────────────────────────────────────
+// withdrawRejectedStake full flow
+// ─────────────────────────────────────────────
+describe("withdrawRejectedStake flow", function () {
+  it("hunter can withdraw stake after grace period without disputing", async function () {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "wrs1");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    // Advance past grace period
+    await time.increase(2 * 3600 + 60);
+    const h1Before = await ethers.provider.getBalance(hunter1.address);
+    const tx   = await factory.connect(hunter1).withdrawRejectedStake(1, 1);
+    const rcpt = await tx.wait();
+    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const h1After = await ethers.provider.getBalance(hunter1.address);
+    expect(h1After - h1Before + gas).to.equal(stake);
+  });
+
+  it("cannot withdraw if not yet rejected", async function () {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "wrs2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    // PENDING status triggers "Factory: not rejected" before rejectedAt check
+    await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1))
+      .to.be.revertedWith("Factory: not rejected");
+    // Note: the rejectedAt check "Factory: not rejected yet" is a belt-and-suspenders guard
+    // for cases where status=REJECTED but rejectedAt is unset (legacy data migration safety).
+  });
+
+  it("cannot withdraw if already disputed", async function () {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "wrs3");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5), 15_000n);
+    await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
+    await factory.connect(poster).rejectSubmission(1, 1);
+    await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
+    await time.increase(2 * 3600 + 60);
+    await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1))
+      .to.be.revertedWith("Factory: already disputed");
   });
 });
