@@ -27,7 +27,7 @@ jobs:
             | tar -xz -C /usr/local/bin gitleaks
 
       - name: Run Gitleaks
-        run: gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1
+        run: gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1 --verbose
         continue-on-error: false
 
   # ─── 2. Dependency vulnerability audit ────────────────────────────────────

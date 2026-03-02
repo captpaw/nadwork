@@ -28,6 +28,27 @@ paths = [
   '''frontend/src/config/addresses\.json$''',
 ]
 
+[[rules.allowlist]]
+description = "Ignore Pinata API header name in Cloudflare Worker (not a secret value)"
+paths = [
+  '''workers/pin-proxy/index\.js$''',
+  '''workers/pin-proxy/README\.md$''',
+]
+
+[[rules.allowlist]]
+description = "Ignore security documentation that references secret names as examples"
+paths = [
+  '''SECURITY\.md$''',
+  '''CHANGELOG\.md$''',
+  '''README\.md$''',
+]
+
+[[rules.allowlist]]
+description = "Ignore empty placeholder values in env example files"
+regexes = [
+  '''(PRIVATE_KEY|SECRET|TOKEN|API_KEY)\s*=$''',
+]
+
 # ─── Custom rules ─────────────────────────────────────────────────────────────
 [[rules]]
 id = "eth-private-key"
