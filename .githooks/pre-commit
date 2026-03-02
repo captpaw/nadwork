@@ -54,12 +54,21 @@ done
 
 # ─── 2. Scan staged diffs for secret patterns ─────────────────────────────────
 SECRET_PATTERNS=(
+  # Ethereum private key — 64 raw hex chars
   "PRIVATE_KEY[[:space:]]*=[[:space:]]*[0-9a-fA-F]{60,}"
+  # PEM private keys
   "BEGIN[[:space:]]+(RSA[[:space:]]+|EC[[:space:]]+|OPENSSH[[:space:]]+)?PRIVATE KEY"
+  # AWS keys
   "AKIA[0-9A-Z]{16}"
   "aws_secret_access_key[[:space:]]*=[[:space:]]*[A-Za-z0-9/+=]{40}"
-  "pinata_secret[[:space:]]*[=:][[:space:]]*[0-9a-fA-F]{32,}"
+  # Pinata — both API key and secret with actual hex values (not empty)
+  "PINATA_API_KEY[[:space:]]*=[[:space:]]*[0-9a-fA-F]{15,}"
   "PINATA_SECRET[[:space:]]*=[[:space:]]*[0-9a-fA-F]{32,}"
+  "pinata_secret[[:space:]]*[=:][[:space:]]*[0-9a-fA-F]{32,}"
+  # WalletConnect project ID — 32 hex chars
+  "WALLETCONNECT_PROJECT_ID[[:space:]]*=[[:space:]]*[0-9a-fA-F]{32}"
+  # Generic proxy/auth tokens with real values (not placeholders)
+  "(PROXY_TOKEN|AUTH_TOKEN|PROXY_AUTH_TOKEN)[[:space:]]*=[[:space:]]*[a-zA-Z0-9_\-]{20,}"
 )
 
 for file in $STAGED_FILES; do
@@ -80,6 +89,21 @@ for file in $STAGED_FILES; do
       ;;
   esac
 done
+
+# ─── 3. Run Gitleaks if available (most accurate) ────────────────────────────
+GITLEAKS_BIN=""
+if command -v gitleaks &>/dev/null; then
+  GITLEAKS_BIN="gitleaks"
+elif [ -f "$HOME/AppData/Local/Temp/gitleaks/gitleaks.exe" ]; then
+  GITLEAKS_BIN="$HOME/AppData/Local/Temp/gitleaks/gitleaks.exe"
+fi
+
+if [ -n "$GITLEAKS_BIN" ]; then
+  if ! "$GITLEAKS_BIN" protect --staged --config .gitleaks.toml --redact 2>/dev/null; then
+    echo -e "${RED}BLOCKED: Gitleaks detected secrets in staged changes${NC}"
+    ERRORS=$((ERRORS + 1))
+  fi
+fi
 
 # ─── Result ───────────────────────────────────────────────────────────────────
 if [ "$ERRORS" -gt 0 ]; then
