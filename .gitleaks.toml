@@ -1,72 +1,114 @@
 # Gitleaks configuration for NadWork
 # Docs: https://github.com/gitleaks/gitleaks#configuration
+#
+# Strategy: targeted rules only — no extend.useDefault to avoid false positives
+# from Web3 hex strings, Pinata header names, and placeholder values.
 
 title = "NadWork Gitleaks Config"
 
-[extend]
-# Extend the default ruleset
-useDefault = true
-
-# ─── Allowlist (false positives to ignore) ────────────────────────────────────
-[[rules.allowlist]]
-description = "Ignore example/template env files"
+# ─── Global allowlist ─────────────────────────────────────────────────────────
+[allowlist]
+description = "Global false-positive suppressions for NadWork"
 paths = [
+  # Example/template files — values are intentionally empty placeholders
   '''.env\.example$''',
   '''frontend/\.env\.example$''',
-]
-
-[[rules.allowlist]]
-description = "Ignore USDC token address (public info)"
-regexes = [
-  '''0x754704Bc059F8C67012fEd69BC8A327a5aafb603''',
-]
-
-[[rules.allowlist]]
-description = "Ignore contract addresses in deployment JSON (public blockchain data)"
-paths = [
-  '''deployments/.*\.json$''',
-  '''frontend/src/config/addresses\.json$''',
-]
-
-[[rules.allowlist]]
-description = "Ignore Pinata API header name in Cloudflare Worker (not a secret value)"
-paths = [
+  # Cloudflare Worker — uses Pinata header name 'pinata_secret_api_key' as a key
+  # in HTTP request headers, not as a secret value
   '''workers/pin-proxy/index\.js$''',
   '''workers/pin-proxy/README\.md$''',
-]
-
-[[rules.allowlist]]
-description = "Ignore security documentation that references secret names as examples"
-paths = [
+  # Documentation files that reference variable names as text examples
   '''SECURITY\.md$''',
   '''CHANGELOG\.md$''',
   '''README\.md$''',
+  # Test files use mock keys and addresses
+  '''test/.*\.js$''',
+  '''test/.*\.ts$''',
 ]
+regexes = [
+  # Public blockchain addresses (40 hex chars with 0x prefix)
+  '''0x[0-9a-fA-F]{40}''',
+  # Empty/placeholder assignments: KEY= or KEY="" or KEY=''
+  '''(?i)(private_key|secret|token|api_key|password)\s*=\s*["']?["']?\s*$''',
+  # Variable references like: key: env.VAR or key: process.env.VAR
+  '''(?i)pinata_(?:api_key|secret_api_key)\s*:\s*(?:env\.|process\.env\.)''',
+]
+commits = [
+  # Historical commits that were cleaned — residual refs may exist in packfiles
+]
+
+# ─── Rule: Ethereum private key (64 hex chars) ────────────────────────────────
+[[rules]]
+id          = "eth-private-key"
+description = "Ethereum private key — 64 hex characters assigned to a variable"
+regex       = '''(?i)(?:PRIVATE_KEY|private_key)\s*[=:]\s*['"` ]?[0-9a-fA-F]{64}['"` ]?'''
+entropy     = 3.5
+keywords    = ["private_key", "PRIVATE_KEY"]
+tags        = ["key", "ethereum", "crypto"]
 
 [[rules.allowlist]]
-description = "Ignore empty placeholder values in env example files"
-regexes = [
-  '''(PRIVATE_KEY|SECRET|TOKEN|API_KEY)\s*=$''',
+description = "Allow process.env / import.meta.env references"
+regexes     = ['''process\.env|import\.meta\.env|env\.PRIVATE_KEY''']
+
+# ─── Rule: Pinata secret with actual value ─────────────────────────────────────
+[[rules]]
+id          = "pinata-secret-value"
+description = "Pinata secret API key with an actual value (not a variable reference)"
+regex       = '''(?i)PINATA_SECRET(?:_API_KEY)?\s*[=:]\s*['"]?([a-fA-F0-9]{32,64})['"]?'''
+entropy     = 3.5
+keywords    = ["pinata_secret", "PINATA_SECRET"]
+tags        = ["key", "pinata", "ipfs"]
+
+# ─── Rule: Pinata API key with actual value ────────────────────────────────────
+[[rules]]
+id          = "pinata-api-key-value"
+description = "Pinata API key with an actual hex value assigned"
+regex       = '''(?i)PINATA_API_KEY\s*=\s*['"]?([a-fA-F0-9]{20,})['"]?'''
+entropy     = 3.0
+keywords    = ["pinata_api_key", "PINATA_API_KEY"]
+tags        = ["key", "pinata", "ipfs"]
+
+[[rules.allowlist]]
+description = "Allow empty assignments and env var references"
+regexes     = [
+  '''PINATA_API_KEY\s*=\s*['"]?['"]?\s*$''',
+  '''process\.env|import\.meta\.env''',
 ]
 
-# ─── Custom rules ─────────────────────────────────────────────────────────────
+# ─── Rule: WalletConnect Project ID ───────────────────────────────────────────
 [[rules]]
-id = "eth-private-key"
-description = "Ethereum private key"
-regex = '''(?i)(PRIVATE_KEY|private_key)\s*[=:]\s*[0-9a-fA-F]{64}'''
-tags = ["key", "ethereum", "crypto"]
-severity = "critical"
+id          = "walletconnect-project-id"
+description = "WalletConnect Project ID — 32 hex chars"
+regex       = '''(?i)WALLETCONNECT_PROJECT_ID\s*=\s*['"]?([a-fA-F0-9]{32})['"]?'''
+entropy     = 3.0
+keywords    = ["walletconnect_project_id", "WALLETCONNECT_PROJECT_ID"]
+tags        = ["key", "walletconnect", "web3"]
 
-[[rules]]
-id = "pinata-secret"
-description = "Pinata secret API key"
-regex = '''(?i)(pinata_secret|PINATA_SECRET)\s*[=:]\s*[0-9a-fA-F]{32,}'''
-tags = ["key", "pinata", "ipfs"]
-severity = "critical"
+[[rules.allowlist]]
+description = "Allow empty assignments"
+regexes     = ['''WALLETCONNECT_PROJECT_ID\s*=\s*['"]?['"]?\s*$''']
 
+# ─── Rule: Generic auth token with real entropy ───────────────────────────────
 [[rules]]
-id = "mnemonic-phrase"
+id          = "generic-high-entropy-token"
+description = "High-entropy token/secret assigned directly (not via env var)"
+regex       = '''(?i)(?:auth_token|proxy_token|bearer_token|access_token)\s*[=:]\s*['"]([a-zA-Z0-9_\-\.]{20,})['"]'''
+entropy     = 4.0
+keywords    = ["auth_token", "proxy_token", "bearer_token", "access_token"]
+tags        = ["token", "auth"]
+
+[[rules.allowlist]]
+description = "Allow obvious dev/test placeholders"
+regexes     = [
+  '''(?i)(dev|test|local|example|placeholder|change.this|your[-_])''',
+  '''process\.env|import\.meta\.env''',
+]
+
+# ─── Rule: BIP39 mnemonic phrase ──────────────────────────────────────────────
+[[rules]]
+id          = "mnemonic-phrase"
 description = "BIP39 mnemonic seed phrase"
-regex = '''(?i)mnemonic\s*[=:]\s*['"]?([a-z]+ ){11,23}[a-z]+['"]?'''
-tags = ["key", "mnemonic", "crypto"]
-severity = "critical"
+regex       = '''(?i)mnemonic\s*[=:]\s*['"]?([a-z]+ ){11,23}[a-z]+['"]?'''
+entropy     = 3.0
+keywords    = ["mnemonic"]
+tags        = ["key", "mnemonic", "crypto"]
