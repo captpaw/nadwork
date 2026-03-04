@@ -1,103 +1,123 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { theme as t } from '@/styles/theme.js';
-import { IconClose } from '@/components/icons/index.jsx';
+import { theme } from '../../styles/theme';
+import { IconX } from '../icons';
 
-export default function Modal({ open, onClose, title, children, maxWidth = '560px' }) {
+export default function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  maxWidth = 520,
+  hideClose = false,
+}) {
+  // Lock body scroll
   useEffect(() => {
-    if (open) document.body.style.overflow = 'hidden';
-    else      document.body.style.overflow = '';
+    if (open) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
     return () => { document.body.style.overflow = ''; };
   }, [open]);
 
-  const handleBackdropClick = onClose || undefined;
-  const handleCloseBtn      = onClose || undefined;
+  // ESC to close
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && open) onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   return (
     <AnimatePresence>
       {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{    opacity: 0 }}
-          transition={{ duration: 0.12 }}
-          onClick={handleBackdropClick}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: t.colors.bg.overlay,
-            backdropFilter: 'blur(4px)',
-            zIndex: t.z.modal,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
+        <>
+          {/* Backdrop */}
           <motion.div
-            onClick={e => e.stopPropagation()}
-            initial={{ opacity: 0, scale: 0.97, y: 8 }}
-            animate={{ opacity: 1, scale: 1,    y: 0 }}
-            exit={{    opacity: 0, scale: 0.97, y: 8 }}
-            transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
             style={{
-              background: t.colors.bg.dark,
-              border: '1px solid ' + t.colors.border.default,
-              borderRadius: t.radius.xl,
-              padding: 'clamp(1.25rem, 4vw, 1.75rem)',
-              width: '100%',
-              maxWidth,
-              maxHeight: '90vh',
-              overflowY: 'auto',
-              boxShadow: t.shadow.xl,
+              position: 'fixed', inset: 0,
+              background: theme.colors.bg.overlay,
+              backdropFilter: 'blur(6px)',
+              WebkitBackdropFilter: 'blur(6px)',
+              zIndex: theme.z.modal,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '20px 16px',
             }}
           >
-            {title && (
-              <div style={{
+            {/* Panel */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: '100%', maxWidth,
+                maxHeight: 'calc(100vh - 40px)',
+                background: theme.colors.bg.card,
+                border: `1px solid ${theme.colors.border.default}`,
+                borderRadius: theme.radius['2xl'],
+                boxShadow: theme.shadow.xl,
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '1.25rem',
-                paddingBottom: '0.875rem',
-                borderBottom: '1px solid ' + t.colors.border.subtle,
-              }}>
-                <h2 style={{
-                  fontWeight: 600,
-                  fontSize: '15px',
-                  letterSpacing: '-0.02em',
-                  color: t.colors.text.primary,
-                  margin: 0,
+                flexDirection: 'column',
+                overflow: 'hidden',
+              }}
+            >
+              {/* Header — sticky, never scrolls away */}
+              {(title || !hideClose) && (
+                <div style={{
+                  flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '18px 22px 16px',
+                  borderBottom: `1px solid ${theme.colors.border.subtle}`,
                 }}>
-                  {title}
-                </h2>
-                {handleCloseBtn && (
-                  <button
-                    onClick={handleCloseBtn}
-                    style={{
-                      background: 'none',
-                      border: '1px solid ' + t.colors.border.default,
-                      color: t.colors.text.muted,
-                      cursor: 'pointer',
-                      borderRadius: t.radius.sm,
-                      width: '28px',
-                      height: '28px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transition: 'color 0.12s ease, border-color 0.12s ease',
-                      flexShrink: 0,
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.color = t.colors.text.secondary; e.currentTarget.style.borderColor = t.colors.border.hover; }}
-                    onMouseLeave={e => { e.currentTarget.style.color = t.colors.text.muted; e.currentTarget.style.borderColor = t.colors.border.default; }}
-                  >
-                    <IconClose size={14} />
-                  </button>
-                )}
+                  {title && (
+                    <h2 style={{
+                      fontFamily: theme.fonts.body, fontWeight: 700,
+                      fontSize: 16, color: theme.colors.text.primary,
+                      letterSpacing: '-0.025em',
+                    }}>{title}</h2>
+                  )}
+                  {!hideClose && (
+                    <button
+                      onClick={onClose}
+                      style={{
+                        width: 28, height: 28,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: theme.colors.text.muted,
+                        borderRadius: theme.radius.sm,
+                        fontSize: 16, transition: theme.transition,
+                        marginLeft: 'auto',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = theme.colors.bg.elevated; e.currentTarget.style.color = theme.colors.text.primary; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = theme.colors.text.muted; }}
+                    >
+                      <IconX size={16} color="currentColor" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Body — scrollable */}
+              <div style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '20px 22px 24px',
+                /* Custom scrollbar to match dark theme */
+                scrollbarWidth: 'thin',
+                scrollbarColor: `${theme.colors.border.default} transparent`,
+              }}>
+                {children}
               </div>
-            )}
-            {children}
+            </motion.div>
           </motion.div>
-        </motion.div>
+        </>
       )}
     </AnimatePresence>
   );

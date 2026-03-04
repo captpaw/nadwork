@@ -11,7 +11,7 @@ import App from './App.jsx';
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 2, staleTime: 10000 } } });
 
 const rkTheme = darkTheme({
-  accentColor:           '#7c3aed',
+  accentColor:           '#6E54FF',
   accentColorForeground: '#ffffff',
   borderRadius:          'medium',
   fontStack:             'system',

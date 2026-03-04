@@ -631,6 +631,38 @@ export function IconNote({ size = 20, color = 'currentColor', style, className, 
   );
 }
 
+export function IconClipboard({ size = 20, color = 'currentColor', style, className, strokeWidth = 1.5 }) {
+  return (
+    <Icon size={size} color={color} style={style} className={className} strokeWidth={strokeWidth}>
+      <path d='M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2'/>
+      <rect x='8' y='2' width='8' height='4' rx='1'/>
+      <line x1='8' y1='11' x2='16' y2='11'/>
+      <line x1='8' y1='15' x2='16' y2='15'/>
+    </Icon>
+  );
+}
+
+export function IconPackage({ size = 20, color = 'currentColor', style, className, strokeWidth = 1.5 }) {
+  return (
+    <Icon size={size} color={color} style={style} className={className} strokeWidth={strokeWidth}>
+      <path d='M16.5 9.4l-9-5.19'/>
+      <path d='M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z'/>
+      <polyline points='3.27 6.96 12 12.01 20.73 6.96'/>
+      <line x1='12' y1='22.08' x2='12' y2='12'/>
+    </Icon>
+  );
+}
+
+export function IconLightbulb({ size = 20, color = 'currentColor', style, className, strokeWidth = 1.5 }) {
+  return (
+    <Icon size={size} color={color} style={style} className={className} strokeWidth={strokeWidth}>
+      <path d='M9 18h6'/>
+      <path d='M10 22h4'/>
+      <path d='M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0018 8 6 6 0 006 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 018.91 14'/>
+    </Icon>
+  );
+}
+
 export function IconQuestion({ size = 20, color = 'currentColor', style, className, strokeWidth = 1.5 }) {
   return (
     <Icon size={size} color={color} style={style} className={className} strokeWidth={strokeWidth}>

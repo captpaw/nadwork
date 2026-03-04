@@ -21,6 +21,7 @@ module.exports = {
   networks: {
     hardhat: {
       chainId: 31337,
+      allowUnlimitedContractSize: true, // BountyFactory exceeds EIP-170 (24KB); tests run locally; mainnet uses Monad
     },
     monad_mainnet: {
       url: process.env.MONAD_RPC_URL || "https://rpc.monad.xyz",

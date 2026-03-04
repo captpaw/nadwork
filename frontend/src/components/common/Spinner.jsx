@@ -1,41 +1,33 @@
-import React from 'react';
-import { theme as t } from '@/styles/theme.js';
+import { theme } from '../../styles/theme';
 
-export function Spinner({ size = 20, color }) {
+// ── Spinner ───────────────────────────────────────────────────────────────────
+export function Spinner({ size = 18, color = theme.colors.primary, style: extraStyle = {} }) {
   return (
     <svg
-      width={size}
-      height={size}
-      viewBox='0 0 24 24'
-      fill='none'
-      stroke={color || t.colors.violet[400]}
-      strokeWidth='2'
-      style={{ animation: 'spin 0.75s linear infinite', flexShrink: 0 }}
-      aria-hidden='true'
+      width={size} height={size} viewBox="0 0 24 24" fill="none"
+      style={{ animation: 'spin 0.8s linear infinite', flexShrink: 0, ...extraStyle }}
     >
-      <circle cx='12' cy='12' r='9' strokeOpacity='0.2'/>
-      <path d='M12 3a9 9 0 019 9' strokeLinecap='round'/>
+      <circle cx="12" cy="12" r="9" stroke={color} strokeOpacity="0.15" strokeWidth="2.5" />
+      <path d="M12 3a9 9 0 0 1 9 9" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   );
 }
 
-export function PageLoader() {
+// ── PageLoader ────────────────────────────────────────────────────────────────
+export function PageLoader({ message = 'Loading…' }) {
   return (
     <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      minHeight: '40vh',
-      flexDirection: 'column',
-      gap: '16px',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      minHeight: '50vh', gap: 14,
     }}>
       <Spinner size={28} />
       <span style={{
-        fontSize: '12px',
-        color: t.colors.text.muted,
-        fontFamily: t.fonts.mono,
-        letterSpacing: '0.04em',
-      }}>Loading…</span>
+        fontFamily: theme.fonts.mono, fontSize: 11,
+        color: theme.colors.text.muted, letterSpacing: '0.05em',
+      }}>
+        {message}
+      </span>
     </div>
   );
 }

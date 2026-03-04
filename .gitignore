@@ -110,6 +110,7 @@ REBRAND_DRAFT.md
 NADWORK_CONCEPT.md
 AUDIT_REPORT.md
 CHANGES_REPORT.md
+REFERENCE_CREATOR_BUILDER_CHANGES.md
 
 # ─── Deployment artifacts (addresses live in frontend/src/config/addresses.json) ─
 deployments/

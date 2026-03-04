@@ -97,7 +97,7 @@ Untuk dev lokal, isi `workers/pin-proxy/.dev.vars`:
 
 ```env
 PINATA_API_KEY=your-pinata-key
-PINATA_API_SECRET=<secret kamu>
+PINATA_API_SECRET=your_pinata_secret_here
 PROXY_AUTH_TOKEN=change-this-in-production
 ALLOWED_ORIGIN=http://localhost:3000
 ```

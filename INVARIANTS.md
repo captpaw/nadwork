@@ -20,9 +20,9 @@ address(factory).balance >= _totalPendingRefunds
 ### I-2: Escrow Balance Coverage
 ```
 address(escrow).balance >= sum(unreleased _records[bountyId].amount)
-                         + sum(unreleased posterStakes[bountyId])
-                         + sum(submissionStakes[bountyId][hunter])
-                         + sum(heldDisputeStakes[bountyId][hunter])
+                         + sum(unreleased creatorStakes[bountyId])
+                         + sum(submissionStakes[bountyId][builder])
+                         + sum(heldDisputeStakes[bountyId][builder])
 ```
 **Artinya:** Setiap ETH yang ada di escrow harus bisa di-attributasi ke record yang spesifik.
 
@@ -30,7 +30,7 @@ address(escrow).balance >= sum(unreleased _records[bountyId].amount)
 ```
 Jika escrow.isSettled(bountyId) == true:
   THEN _records[bountyId].amount sudah ditransfer (released atau refunded)
-  AND  posterStakes[bountyId] == 0
+  AND  creatorStakes[bountyId] == 0
 ```
 
 ---
@@ -56,7 +56,7 @@ Jika submission.status == APPROVED:
 
 Jika submission.disputed == true:
   THEN submission.status == REJECTED
-  AND  escrow.heldDisputeStakes[bountyId][hunter] > 0
+  AND  escrow.heldDisputeStakes[bountyId][builder] > 0
 
 Jika submission.status == REJECTED AND submission.gracePeriodExpired == true:
   THEN submission.rejectedAt > 0
@@ -96,8 +96,8 @@ Semua fungsi berikut HANYA bisa dipanggil oleh factory:
   - NadWorkEscrow: depositNative, depositERC20, release, releaseToAll, claimTimeout,
                    claimTimeoutPullable, refund, depositSubmissionStake,
                    refundSubmissionStake, slashSubmissionStake, moveStakeToHeld,
-                   releaseDisputeStake, slashHeldDisputeStake, refundPosterStake,
-                   slashPosterStake
+                   releaseDisputeStake, slashHeldDisputeStake,                    refundCreatorStake,
+                   slashCreatorStake
   - ReputationRegistry: recordSubmission, recordWin, recordBountyPosted,
                         recordBountyCompleted, recordFraudSubmission, recordFraudCancel,
                         recordCancelWithSubmissions, recordDisputeLost
@@ -118,16 +118,16 @@ sweep() TIDAK BOLEH menyentuh:
 
 ### IV-1: fraudCount Only Increases on Fraud
 ```
-hunters[primary].fraudCount > 0
-  IMPLIES resolveDispute dengan inFavorOfHunters==true pernah dipanggil
+builders[primary].fraudCount > 0
+  IMPLIES resolveDispute dengan inFavorOfBuilders==false pernah dipanggil (dispute denied)
   AND     recordFraudSubmission pernah dipanggil untuk hunter tersebut
 ```
 **Konsekuensi dari BUG-RR-5:** `recordFraudSubmission` harus dipanggil di deny path jika dispute adalah tentang fraud submission.
 
 ### IV-2: Score is Non-Negative
 ```
-getHunterScore(hunter) >= 0  [selalu, karena max(0, positive - penalty)]
-getProjectScore(project) >= 0
+getBuilderScore(builder) >= 0  [selalu, karena max(0, positive - penalty)]
+getCreatorScore(creator) >= 0
 ```
 
 ---
@@ -139,13 +139,13 @@ getProjectScore(project) >= 0
 Jika triggerTimeout dipanggil untuk native bounty:
   THEN factory.balance naik sebesar hunterPool (dari escrow via claimTimeoutPullable)
   AND  _totalPendingTimeoutPayouts naik sebesar hunterPool
-  AND  sum(pendingTimeoutPayouts[hunter] for semua pendingHunters) == hunterPool
+  AND  sum(pendingTimeoutPayouts[builder] for semua pendingBuilders) == builderPool
 ```
 
 ### V-2: Submission Stake Accounting
 ```
-escrow.submissionStakes[bountyId][hunter] > 0
-  IMPLIES hunter pernah submit ke bountyId
+escrow.submissionStakes[bountyId][builder] > 0
+  IMPLIES builder pernah submit ke bountyId
   AND     stake BELUM dikembalikan / di-slash / di-move ke heldDisputeStakes
 ```
 

@@ -1,226 +1,318 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
-import { theme as t } from '@/styles/theme.js';
-import { useDisplayName } from '@/hooks/useIdentity.js';
-import { getAvatarSrc } from '@/hooks/useAvatar.js';
+import { theme } from '../../styles/theme';
+import { ADDRESSES } from '../../config/contracts';
+import { useGlobalStats } from '../../hooks/useGlobalStats';
+import { LogoLockup } from '../common/Logo';
+import NotificationBell from '../common/NotificationBell';
 
-// ── Logo Mark — new design: deep purple square with gradient glow + N mark ────
-function LogoMark({ size = 30 }) {
-  const id = 'nwglow';
+// ── Ticker item ───────────────────────────────────────────────────────────────
+function TickerItem({ label, value }) {
   return (
-    <svg width={size} height={size} viewBox='0 0 32 32' fill='none' aria-hidden='true'>
-      <defs>
-        <radialGradient id={id} cx='50%' cy='60%' r='55%'>
-          <stop offset='0%' stopColor='#7c3aed' stopOpacity='0.3'/>
-          <stop offset='100%' stopColor='#7c3aed' stopOpacity='0'/>
-        </radialGradient>
-      </defs>
-      {/* Background — near-black with deep purple undertone */}
-      <rect width='32' height='32' rx='8' fill='#0c0018'/>
-      <rect width='32' height='32' rx='8' fill={'url(#' + id + ')'}/>
-      {/* N letterform: left=white, diagonal=violet, right=white */}
-      <line x1='9'  y1='22' x2='9'  y2='10' stroke='#f0f0f0' strokeWidth='2.5' strokeLinecap='round'/>
-      <line x1='9'  y1='10' x2='23' y2='22' stroke='#a78bfa' strokeWidth='2.5' strokeLinecap='round'/>
-      <line x1='23' y1='10' x2='23' y2='22' stroke='#f0f0f0' strokeWidth='2.5' strokeLinecap='round'/>
-      {/* Accent dot — top-right of N */}
-      <circle cx='23' cy='10' r='2' fill='#c4b5fd'/>
-    </svg>
+    <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+      <span style={{
+        fontFamily: theme.fonts.mono, fontSize: 11,
+        color: theme.colors.text.muted,
+        letterSpacing: '0.07em', textTransform: 'uppercase',
+      }}>{label}</span>
+      <span style={{
+        fontFamily: theme.fonts.mono, fontSize: 11,
+        color: theme.colors.text.secondary, letterSpacing: '0.03em',
+      }}>{value}</span>
+    </span>
   );
 }
 
-// ── Nav Link ──────────────────────────────────────────────────────────────────────────────
-function NavLink({ href, label, active }) {
+// ── Nav link ──────────────────────────────────────────────────────────────────
+function NavLink({ label, href, active, onClick }) {
   const [hov, setHov] = useState(false);
   return (
     <a
       href={href}
+      onClick={onClick}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
-        fontSize: '13px',
-        fontWeight: active ? 500 : 420,
-        letterSpacing: '-0.015em',
-        color: active ? '#f0f0f0' : hov ? '#c0c0c8' : '#58585e',
-        textDecoration: 'none',
-        padding: '4px 0',
+        fontFamily: theme.fonts.body,
+        fontSize: 14,
+        fontWeight: active ? 600 : 400,
+        color: active ? theme.colors.text.primary : hov ? theme.colors.text.primary : theme.colors.text.secondary,
+        letterSpacing: '-0.01em',
+        transition: theme.transition,
+        cursor: 'pointer',
         position: 'relative',
-        whiteSpace: 'nowrap',
-        transition: 'color 0.12s ease',
+        paddingBottom: 2,
       }}
     >
       {label}
       {active && (
         <span style={{
-          position: 'absolute',
-          bottom: '-1px',
-          left: 0,
-          width: '100%',
-          height: '1px',
-          background: t.colors.violet[600],
-          borderRadius: '1px',
-        }}/>
+          position: 'absolute', bottom: -2, left: 0, right: 0,
+          height: 1.5, background: theme.colors.primary,
+          borderRadius: 999,
+        }} />
       )}
     </a>
   );
 }
 
-// ── Profile Avatar ────────────────────────────────────────────────────────────────────────
-function ProfileAvatar({ address }) {
-  const [hov, setHov] = useState(false);
-  const [imgErr, setImgErr] = useState(false);
-  const { username } = useDisplayName(address);
-  const avatarSrc = getAvatarSrc(address);
-  const initials = username
-    ? username.slice(0, 2).toUpperCase()
-    : address ? address.slice(2, 4).toUpperCase() : '??';
-  const hue = address ? parseInt(address.slice(2, 6), 16) % 360 : 200;
-
-  return (
-    <button
-      onClick={() => { window.location.hash = '#/profile'; }}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      title='My Profile'
-      style={{
-        width: '32px',
-        height: '32px',
-        borderRadius: '7px',
-        background: hov ? `hsl(${hue},38%,18%)` : `hsl(${hue},30%,12%)`,
-        border: `1px solid ${hov ? `hsl(${hue},48%,38%)` : `hsl(${hue},25%,22%)`}`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontFamily: t.fonts.mono,
-        fontSize: '10px',
-        fontWeight: 700,
-        color: `hsl(${hue},60%,60%)`,
-        cursor: 'pointer',
-        transition: t.transition,
-        flexShrink: 0,
-        outline: 'none',
-        overflow: 'hidden',
-        padding: 0,
-      }}
-    >
-      {avatarSrc && !imgErr ? (
-        <img
-          src={avatarSrc}
-          alt=""
-          onError={() => setImgErr(true)}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
-      ) : initials}
-    </button>
-  );
-}
-
-// ── AppHeader ─────────────────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 export default function AppHeader() {
+  const { address } = useAccount();
+  const [route, setRoute] = useState(window.location.hash || '#/');
   const [scrolled, setScrolled] = useState(false);
-  const [hash, setHash]         = useState(typeof window !== 'undefined' ? window.location.hash : '');
-  const { address, isConnected } = useAccount();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const { bountyCount, submissionCount } = useGlobalStats();
 
+  // Config / env validation (critical contract addresses)
+  const requiredKeys = ['factory', 'registry', 'escrow', 'reputation', 'identity'];
+  const missingKeys = requiredKeys.filter((key) => {
+    const val = ADDRESSES[key];
+    if (!val) return true;
+    const lower = String(val).toLowerCase();
+    return lower === '0x0000000000000000000000000000000000000000';
+  });
+  const hasConfigError = missingKeys.length > 0;
+
+  // Short factory address for ticker display
+  const factoryAddr = ADDRESSES.factory
+    ? `${ADDRESSES.factory.slice(0, 6)}…${ADDRESSES.factory.slice(-4)}`
+    : '—';
+
+  // Track route
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 8);
-    const onHash   = () => setHash(window.location.hash || '#/');
-    window.addEventListener('scroll',     onScroll, { passive: true });
+    const onHash = () => setRoute(window.location.hash || '#/');
     window.addEventListener('hashchange', onHash);
-    return () => {
-      window.removeEventListener('scroll',     onScroll);
-      window.removeEventListener('hashchange', onHash);
-    };
+    return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const isRoot    = hash === '#/' || hash === '' || hash === '#';
-  const isProfile = hash.startsWith('#/profile');
+  // Track scroll for subtle header shadow
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  const adminWallets = (import.meta.env.VITE_ADMIN_WALLETS || '')
+    .split(',')
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdmin = address && adminWallets.includes(address.toLowerCase());
+
+  const nav = [
+    { label: 'Explore',     href: '#/bounties'     },
+    { label: 'Leaderboard', href: '#/leaderboard'  },
+    { label: 'Dashboard',   href: '#/dashboard'    },
+    ...(address ? [{ label: 'Account', href: `#/profile/${address}` }] : []),
+    ...(isAdmin ? [{ label: 'Admin', href: '#/admin' }] : []),
+    { label: 'Help',        href: '#/help'         },
+  ];
+
+  const isActive = (href) => {
+    if (href === '#/') return route === '#/' || route === '#' || route === '';
+    if (href.startsWith('#/profile/')) return route.startsWith('#/profile');
+    if (href === '#/bounties') return route === '#/bounties';
+    return route.startsWith(href);
+  };
 
   return (
-    <header style={{
-      position: 'fixed',
-      top: 0, left: 0, right: 0,
-      zIndex: t.z.header,
-      height: '60px',
-      background: scrolled ? 'rgba(8,8,8,0.96)' : 'rgba(8,8,8,0)',
-      borderBottom: `1px solid ${scrolled ? '#1e1e26' : 'transparent'}`,
-      backdropFilter: scrolled ? 'blur(20px) saturate(180%)' : 'none',
-      transition: 'background 0.22s ease, border-color 0.22s ease, backdrop-filter 0.22s ease',
-    }}>
-      <div className='container' style={{
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '24px',
+    <>
+      {hasConfigError && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: theme.z.header + 1,
+          background: '#3b0d0d',
+          borderBottom: '1px solid #7f1d1d',
+          color: '#fecaca',
+          fontFamily: theme.fonts.mono,
+          fontSize: 11,
+          padding: '6px 20px',
+          textAlign: 'center',
+        }}>
+          Config error: missing contract addresses&nbsp;
+          <span style={{ opacity: 0.9 }}>({missingKeys.join(', ') || 'unknown'})</span>. Check VITE_* env or addresses.json.
+        </div>
+      )}
+
+      {/* ── Fixed header ── */}
+      <header style={{
+        position: 'fixed',
+        top: hasConfigError ? 24 : 0,
+        left: 0,
+        right: 0,
+        zIndex: theme.z.header,
+        background: scrolled
+          ? 'rgba(15,15,15,0.96)'
+          : 'rgba(15,15,15,0.92)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        borderBottom: `1px solid ${scrolled ? theme.colors.border.subtle : theme.colors.border.faint}`,
+        transition: theme.transition,
       }}>
 
-        {/* Logo */}
-        <a href='/#/' style={{
-          textDecoration: 'none',
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-        }}>
-          <LogoMark size={30} />
-          <div style={{ display: 'flex', alignItems: 'baseline', userSelect: 'none' }}>
-            <span style={{
-              fontFamily: t.fonts.body,
-              fontWeight: 200,
-              fontSize: '17px',
-              letterSpacing: '-0.03em',
-              color: 'rgba(240,240,240,0.35)',
-              lineHeight: 1,
-            }}>nad</span>
-            <span style={{
-              fontFamily: t.fonts.body,
-              fontWeight: 860,
-              fontSize: '17px',
-              letterSpacing: '-0.04em',
-              color: '#f0f0f0',
-              lineHeight: 1,
-            }}>work</span>
-          </div>
-        </a>
-
-        {/* Right side: nav + connect + avatar */}
+        {/* Main nav row */}
         <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '20px',
-          flexShrink: 0,
+          height: 68,
+          display: 'flex', alignItems: 'center', gap: 36,
+          padding: '0 clamp(20px,4vw,56px)',
+          maxWidth: 1440, margin: '0 auto',
         }}>
-          {/* Nav links */}
-          <nav style={{ display: 'flex', gap: '18px', alignItems: 'center' }}>
-            <NavLink href='/#/'            label='Bounties'    active={isRoot} />
-            <NavLink href='/#/post'        label='Post'        active={hash === '#/post'} />
-            <NavLink href='/#/leaderboard' label='Leaderboard' active={hash.startsWith('#/leaderboard')} />
-            <NavLink href='/#/dashboard'   label='Dashboard'   active={hash.startsWith('#/dashboard')} />
-            {isConnected && (
-              <NavLink href='/#/profile' label='Profile' active={isProfile} />
-            )}
+          {/* Logo */}
+          <a href="#/" style={{ textDecoration: 'none', flexShrink: 0 }}>
+            <LogoLockup sealSize={26} fontSize={17} color={theme.colors.text.primary} />
+          </a>
+
+          {/* Nav links — desktop */}
+          <nav className="hide-mobile" style={{ display: 'flex', gap: 28, flex: 1 }}>
+            {nav.map(n => (
+              <NavLink key={n.href} {...n} active={isActive(n.href)} />
+            ))}
           </nav>
 
-          {/* Divider */}
-          <div style={{
-            width: '1px', height: '18px',
-            background: '#1e1e26',
-            flexShrink: 0,
-          }}/>
+          {/* Spacer on mobile */}
+          <div style={{ flex: 1 }} className="hide-desktop" />
 
-          {/* Connect + Avatar */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ConnectButton
-              showBalance={false}
-              chainStatus='icon'
-              accountStatus='address'
-            />
-            {isConnected && address && (
-              <ProfileAvatar address={address} />
-            )}
+          {/* Right side */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            {/* Notification bell — only when wallet is connected */}
+            {address && <NotificationBell />}
+
+            {/* RainbowKit connect button — custom styled */}
+            <ConnectButton.Custom>
+              {({ account, chain, openAccountModal, openChainModal, openConnectModal, mounted: rkMounted }) => {
+                const ready = rkMounted;
+                const connected = ready && account && chain;
+                return (
+                  <button
+                    onClick={connected ? openAccountModal : openConnectModal}
+                    style={{
+                      padding: connected ? '8px 16px' : '8px 20px',
+                      background: connected ? theme.colors.bg.elevated : theme.colors.primary,
+                      color: connected ? theme.colors.text.primary : '#ffffff',
+                      border: connected ? `1px solid ${theme.colors.border.strong}` : 'none',
+                      borderRadius: theme.radius.md,
+                      fontSize: 13,
+                      fontFamily: theme.fonts.body,
+                      fontWeight: 600,
+                      letterSpacing: '-0.01em',
+                      cursor: 'pointer',
+                      boxShadow: connected ? 'none' : `0 2px 16px ${theme.colors.primaryGlow}`,
+                      transition: theme.transition,
+                      display: 'flex', alignItems: 'center', gap: 7,
+                    }}
+                    onMouseEnter={e => {
+                      if (connected) { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = '#fff'; e.currentTarget.style.background = theme.colors.bg.hover; }
+                      else { e.currentTarget.style.background = theme.colors.primaryHover; }
+                    }}
+                    onMouseLeave={e => {
+                      if (connected) { e.currentTarget.style.borderColor = theme.colors.border.strong; e.currentTarget.style.color = theme.colors.text.primary; e.currentTarget.style.background = theme.colors.bg.elevated; }
+                      else { e.currentTarget.style.background = theme.colors.primary; }
+                    }}
+                  >
+                    {connected ? (
+                      <>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: theme.colors.green[400], boxShadow: `0 0 6px ${theme.colors.green[400]}` }} />
+                        {account.displayName}
+                        <span style={{ color: theme.colors.text.muted, fontSize: 11 }}>▾</span>
+                      </>
+                    ) : 'Connect Wallet'}
+                  </button>
+                );
+              }}
+            </ConnectButton.Custom>
+
+            {/* Mobile hamburger */}
+            <button
+              className="hide-desktop"
+              onClick={() => setMobileOpen(o => !o)}
+              style={{
+                width: 38, height: 38, display: 'flex',
+                flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 5, background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+              }}
+            >
+              {[0,1,2].map(i => (
+                <span key={i} style={{
+                  display: 'block', width: 20, height: 1.5,
+                  background: theme.colors.text.secondary,
+                  borderRadius: 999,
+                  transition: theme.transition,
+                  transformOrigin: 'center',
+                  transform: mobileOpen
+                    ? i === 0 ? 'rotate(45deg) translate(4px, 4px)'
+                    : i === 2 ? 'rotate(-45deg) translate(4px, -4px)'
+                    : 'scaleX(0)'
+                    : 'none',
+                }} />
+              ))}
+            </button>
           </div>
         </div>
-      </div>
-    </header>
+
+        {/* ── Ticker strip ── */}
+        <div style={{
+          borderTop: `1px solid ${theme.colors.border.subtle}`,
+          padding: '0 clamp(20px,4vw,56px)',
+          height: 38,
+          display: 'flex', alignItems: 'center', gap: 16,
+          overflow: 'hidden',
+          maxWidth: 1440, margin: '0 auto',
+        }}
+          className="hide-mobile"
+        >
+          {/* Live dot */}
+          <div style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: theme.colors.primary, flexShrink: 0,
+            boxShadow: `0 0 8px ${theme.colors.primaryGlow}`,
+            animation: 'livePulse 2s ease infinite',
+          }} />
+
+          <div style={{ display: 'flex', gap: 28, alignItems: 'center', overflow: 'hidden' }}>
+            <TickerItem label="Contract"    value={factoryAddr} />
+            <TickerItem label="Network"     value="Monad Testnet" />
+            <TickerItem label="Bounties"    value={bountyCount    != null ? String(bountyCount)    : '—'} />
+            <TickerItem label="Submissions" value={submissionCount != null ? String(submissionCount) : '—'} />
+          </div>
+        </div>
+
+        {/* ── Mobile nav dropdown ── */}
+        {mobileOpen && (
+          <div style={{
+            borderTop: `1px solid ${theme.colors.border.subtle}`,
+            padding: '16px 20px 24px',
+            display: 'flex', flexDirection: 'column', gap: 4,
+            background: theme.colors.bg.glass,
+          }}>
+            {nav.map(n => (
+              <a
+                key={n.href}
+                href={n.href}
+                onClick={() => setMobileOpen(false)}
+                style={{
+                  fontFamily: theme.fonts.body, fontSize: 15,
+                  fontWeight: isActive(n.href) ? 600 : 400,
+                  color: isActive(n.href) ? theme.colors.text.primary : theme.colors.text.secondary,
+                  padding: '11px 14px', borderRadius: theme.radius.md,
+                  background: isActive(n.href) ? theme.colors.bg.elevated : 'transparent',
+                  transition: theme.transition,
+                }}
+              >
+                {n.label}
+              </a>
+            ))}
+          </div>
+        )}
+      </header>
+
+      <style>{`
+        @media (min-width: 769px) { .hide-desktop { display: none !important; } }
+        @media (max-width: 768px) { .hide-mobile  { display: none !important; } }
+      `}</style>
+    </>
   );
 }

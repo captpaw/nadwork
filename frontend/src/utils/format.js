@@ -58,8 +58,22 @@ export function bountyStatusLabel(status) { return BOUNTY_STATUS[status] || 'UNK
 export function bountyTypeLabel(type)     { return BOUNTY_TYPES[type]   || 'UNKNOWN'; }
 export function subStatusLabel(status)    { return SUB_STATUS[status]   || 'UNKNOWN'; }
 
+// Normalize on-chain uint8/BigInt bounty status → lowercase string for Badge component
+const _BOUNTY_STR = { 0: 'active', 1: 'reviewing', 2: 'completed', 3: 'expired', 4: 'cancelled', 5: 'disputed' };
+export function normalizeBountyStatus(s) {
+  if (s == null) return 'unknown';
+  return _BOUNTY_STR[Number(s)] || String(s).toLowerCase();
+}
+
+// Normalize on-chain uint8/BigInt submission status → lowercase string for Badge component
+const _SUB_STR = { 0: 'pending', 1: 'approved', 2: 'rejected' };
+export function normalizeSubStatus(s) {
+  if (s == null) return 'pending';
+  return _SUB_STR[Number(s)] || String(s).toLowerCase();
+}
+
 export function explorerUrl(hash, type = 'tx') {
-  return 'https://monadexplorer.com/' + type + '/' + hash;
+  return 'https://testnet.monadexplorer.com/' + type + '/' + hash;
 }
 
 export function categoryLabel(cat) {

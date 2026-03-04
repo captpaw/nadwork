@@ -1,830 +1,971 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useAccount, useWalletClient } from 'wagmi';
-import { useConnectModal } from '@rainbow-me/rainbowkit';
 import { ethers } from 'ethers';
-import { motion, AnimatePresence } from 'framer-motion';
-import { theme as t } from '@/styles/theme.js';
-import Card from '@/components/common/Card.jsx';
-import Button from '@/components/common/Button.jsx';
-import Input from '@/components/common/Input.jsx';
-import { uploadJSON, buildBountyMeta } from '@/config/pinata.js';
-import { getContract, getReadContract } from '@/utils/ethers.js';
-import { ADDRESSES, FACTORY_ABI, ERC20_ABI, CATEGORIES, CATEGORY_LABELS } from '@/config/contracts.js';
-import { toast } from '@/utils/toast.js';
-import { IconFolder, IconSave, IconTarget, IconWarning, IconCheck, IconBack, IconChevronRight } from '@/components/icons/index.jsx';
+import { theme } from '../styles/theme';
+import Button from '../components/common/Button';
+import { uploadJSON, buildBountyMeta } from '../config/pinata';
+import { getContract } from '../utils/ethers';
+import { ADDRESSES, FACTORY_ABI } from '../config/contracts';
+import { toast } from '../utils/toast';
+import { requestNotificationRefresh } from '../hooks/useNotifications';
+import { IconCheck, IconX, IconCode, IconTarget, IconNote, IconChart, IconBounties, IconChevronLeft, IconChevronRight } from '../components/icons';
 
-const TEMPLATE_KEY = 'nadwork_bounty_templates';
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CATEGORIES = [
+  { key: 'Dev',      Icon: IconCode,  desc: 'Smart contracts, dApps, tooling' },
+  { key: 'Design',   Icon: IconTarget, desc: 'UI/UX, branding, graphics'       },
+  { key: 'Content',  Icon: IconNote,   desc: 'Docs, writing, translation'       },
+  { key: 'Research', Icon: IconChart,  desc: 'Analysis, audits, reports'        },
+  { key: 'Other',    Icon: IconTarget, desc: 'Anything else'                    },
+];
 
-function loadTemplates() {
-  try { return JSON.parse(localStorage.getItem(TEMPLATE_KEY) || '[]'); } catch { return []; }
-}
+const STEPS = [
+  { id: 'task',   label: 'Task',   desc: 'What needs to be done'    },
+  { id: 'reward', label: 'Reward', desc: 'Payment and deadline'      },
+  { id: 'review', label: 'Review', desc: 'Confirm and post'          },
+];
 
-function saveTemplate(form) {
-  const templates = loadTemplates();
-  const name = prompt('Template name:', form.title || 'My Template');
-  if (!name) return;
-  const t = { id: Date.now(), name, data: form };
-  localStorage.setItem(TEMPLATE_KEY, JSON.stringify([t, ...templates.slice(0, 9)]));
-  return true;
-}
+const INITIAL_FORM = {
+  title: '',
+  description: '',
+  category: 'Dev',
+  requirements: [''],     // list: what builder must do
+  deliverables: [''],     // list: what builder must submit
+  skills: '',
+  reward: '',
+  winnerCount: '1',
+  deadline: '',
+  contactInfo: '',
+  requiresApplication: false, // V4: curated project flag
+};
 
-// ── Deadline picker ────────────────────────────────────────────────────────
-function DeadlinePicker({ value, onChange }) {
-  const PRESETS = [
-    { label: '7d',    days: 7   },
-    { label: '14d',   days: 14  },
-    { label: '30d',   days: 30  },
-    { label: '60d',   days: 60  },
-    { label: '90d',   days: 90  },
-    { label: '~6mo',  days: 180 },
-  ];
-
-  const toLocalISO = (date) => {
-    const p = n => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${p(date.getMonth()+1)}-${p(date.getDate())}T${p(date.getHours())}:${p(date.getMinutes())}`;
-  };
-
-  const setPreset = (days) => {
-    // For 180d: use 179 days + noon to stay well under the strict < 180 days contract check.
-    // The contract uses block.timestamp at tx time which is slightly ahead of Date.now().
-    const effectiveDays = days >= 180 ? 179 : days;
-    const d = new Date(Date.now() + effectiveDays * 86400 * 1000);
-    // For max preset use noon; for others end-of-day is fine
-    d.setHours(days >= 180 ? 12 : 23, days >= 180 ? 0 : 59, 0, 0);
-    onChange(toLocalISO(d));
-  };
-
-  const selectedDays  = value ? Math.round((new Date(value).getTime() - Date.now()) / 86400000) : null;
-  const minVal = toLocalISO(new Date(Date.now() + 3600 * 1000));
-  // Cap at 179 days + 12h so the picker never lets the user choose a date that will fail the contract's strict < 180 days check
-  const maxVal = toLocalISO(new Date(Date.now() + 179 * 86400 * 1000 + 43200 * 1000));
-
-  const inputStyle = {
-    background: t.colors.bg.base, border: '1px solid ' + t.colors.border.default,
-    borderRadius: t.radius.md, padding: '9px 13px', color: t.colors.text.primary,
-    fontSize: '14px', outline: 'none', width: '100%', colorScheme: 'dark',
-    fontFamily: t.fonts.body,
-  };
-
+// ── Sub-components ────────────────────────────────────────────────────────────
+function StepIndicator({ current }) {
   return (
-    <div>
-      <label style={{ fontSize: '13px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '8px' }}>
-        Deadline
-        <span style={{ fontSize: '11px', color: t.colors.text.muted, fontWeight: 400, marginLeft: '6px' }}>max ~179 days</span>
-      </label>
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-        {PRESETS.map(p => {
-          const active = selectedDays !== null && Math.abs(selectedDays - p.days) <= 1;
-          return (
-            <button key={p.days} type="button" onClick={() => setPreset(p.days)} style={{
-              padding: '4px 11px', borderRadius: '99px', cursor: 'pointer', transition: t.transition,
-              border: '1px solid ' + (active ? t.colors.primary : t.colors.border.default),
-              background: active ? 'rgba(124,58,237,0.15)' : 'transparent',
-              color: active ? '#818cf8' : t.colors.text.muted,
-              fontSize: '11px', fontWeight: 500,
-            }}>{p.label}</button>
-          );
-        })}
-      </div>
-      <input type="datetime-local" value={value} min={minVal} max={maxVal}
-        onChange={e => onChange(e.target.value)} style={inputStyle} />
-      {value && (
-        <div style={{ marginTop: '6px', fontSize: '12px', color: t.colors.green[400], display: 'flex', alignItems: 'center', gap: '5px' }}>
-          <IconCheck size={12} color={t.colors.green[400]} />
-          <span>{new Date(value).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Step indicator ────────────────────────────────────────────────────────
-const STEP_LABELS = ['Details', 'Reward', 'Review'];
-
-function StepBar({ current }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '2.5rem' }}>
-      {STEP_LABELS.map((label, i) => {
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 36 }}>
+      {STEPS.map((s, i) => {
         const done   = i < current;
         const active = i === current;
         return (
-          <React.Fragment key={label}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: done ? '#10b981' : active ? t.colors.primary : 'transparent', border: '2px solid ' + (done ? '#10b981' : active ? t.colors.primary : t.colors.border.default), display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '12px', color: done || active ? '#fff' : t.colors.text.muted, transition: 'all 0.25s ease', flexShrink: 0 }}>
-                {done ? <IconCheck size={13} color="#fff" /> : i + 1}
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', flex: i < STEPS.length - 1 ? 1 : 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: '50%',
+                background: done
+                  ? theme.colors.primary
+                  : active ? theme.colors.primaryDim : 'transparent',
+                border: `1.5px solid ${done || active ? theme.colors.primary : theme.colors.border.default}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: theme.fonts.mono, fontSize: 11, fontWeight: 600,
+                color: done ? '#fff' : active ? theme.colors.primary : theme.colors.text.faint,
+                transition: theme.transition,
+                flexShrink: 0,
+              }}>
+                {done ? <IconCheck size={14} color="#fff" strokeWidth={2.5} /> : i + 1}
               </div>
-              <span style={{ fontSize: '11px', fontWeight: active ? 600 : 400, color: active ? t.colors.text.primary : t.colors.text.muted, whiteSpace: 'nowrap' }}>{label}</span>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{
+                  fontFamily: theme.fonts.body, fontSize: 12, fontWeight: active ? 600 : 400,
+                  color: active ? theme.colors.text.primary : done ? theme.colors.text.secondary : theme.colors.text.faint,
+                  transition: theme.transition, whiteSpace: 'nowrap',
+                }}>{s.label}</div>
+              </div>
             </div>
-            {i < 2 && (
-              <div style={{ flex: 1, height: '2px', margin: '0 6px', marginBottom: '16px', background: i < current ? 'linear-gradient(90deg, #10b981, #7c3aed)' : t.colors.border.default, transition: 'background 0.3s ease' }} />
+            {i < STEPS.length - 1 && (
+              <div style={{
+                flex: 1, height: 1,
+                background: done ? theme.colors.primary : theme.colors.border.subtle,
+                margin: '0 10px', marginBottom: 22,
+                transition: theme.transition,
+              }} />
             )}
-          </React.Fragment>
+          </div>
         );
       })}
     </div>
   );
 }
 
-// ── Default form state ─────────────────────────────────────────────────────
-const DEFAULT_FORM = {
-  title: '', shortDescription: '', description: '',
-  requirements: [''], evaluationCriteria: [''],
-  skills: '', estimatedHours: '', contactInfo: '',
-  category: 'dev', deadlineDate: '',
-  rewardType: 0, rewardAmount: '', winnerCount: 1, prizeWeights: [100],
-  rewardToken: '',
-};
-
-// ── Main component ─────────────────────────────────────────────────────────
-export default function PostBountyPage() {
-  const { address }  = useAccount();
-  const { data: wc } = useWalletClient();
-  const { openConnectModal } = useConnectModal();
-
-  const [step, setStep]       = useState(0);
-  const [submitting, setSub]  = useState(false);
-  const [form, setForm]       = useState(DEFAULT_FORM);
-  const [templates, setTemplates] = useState(loadTemplates);
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [posterStakeWei, setPosterStakeWei] = useState(ethers.parseEther('0.005'));
-
-  const set = (key, val) => setForm(p => ({ ...p, [key]: val }));
-
-  // Warn user before navigating away with unsaved form data
-  useEffect(() => {
-    const hasContent = form.title || form.description || form.rewardAmount;
-    if (!hasContent) return;
-    const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [form.title, form.description, form.rewardAmount]);
-
-  // Requirements list helpers
-  const addReq    = ()     => setForm(p => ({ ...p, requirements: [...p.requirements, ''] }));
-  const removeReq = (i)    => setForm(p => ({ ...p, requirements: p.requirements.filter((_, j) => j !== i) }));
-  const setReq    = (i, v) => setForm(p => ({ ...p, requirements: p.requirements.map((r, j) => j === i ? v : r) }));
-
-  // Evaluation criteria helpers
-  const addCrit    = ()     => setForm(p => ({ ...p, evaluationCriteria: [...p.evaluationCriteria, ''] }));
-  const removeCrit = (i)    => setForm(p => ({ ...p, evaluationCriteria: p.evaluationCriteria.filter((_, j) => j !== i) }));
-  const setCrit    = (i, v) => setForm(p => ({ ...p, evaluationCriteria: p.evaluationCriteria.map((r, j) => j === i ? v : r) }));
-
-  const setWinnerCount = (n) => {
-    const w = n === 1 ? [100] : n === 2 ? [60, 40] : [60, 30, 10]; // max 3 in V2
-    setForm(p => ({ ...p, winnerCount: n, prizeWeights: w }));
-  };
-
-  const updateWeight = (i, val) => {
-    const weights = [...form.prizeWeights];
-    weights[i] = Math.max(0, Math.min(100, Number(val) || 0));
-    setForm(p => ({ ...p, prizeWeights: weights }));
-  };
-
-  const handleSaveTemplate = () => {
-    if (saveTemplate(form)) {
-      setTemplates(loadTemplates());
-      toast('Template saved!', 'success');
-    }
-  };
-
-  const handleLoadTemplate = (tmpl) => {
-    setForm({ ...DEFAULT_FORM, ...tmpl.data });
-    setShowTemplates(false);
-    setStep(0);
-    toast('Template loaded: ' + tmpl.name, 'success');
-  };
-
-  const handleDeleteTemplate = (id) => {
-    const updated = templates.filter(t => t.id !== id);
-    localStorage.setItem(TEMPLATE_KEY, JSON.stringify(updated));
-    setTemplates(updated);
-  };
-
-  const MAX_DAYS  = 180;
-  const weightSum = form.prizeWeights.reduce((a, b) => a + b, 0);
-  const deadline  = form.deadlineDate ? Math.floor(new Date(form.deadlineDate).getTime() / 1000) : 0;
-
-  // Mirrors BountyFactory._calcReviewDeadline — used in Step 3 summary
-  function calcReviewWindowSecs(deadlineSec) {
-    if (!deadlineSec) return 0;
-    const nowSec = Math.floor(Date.now() / 1000);
-    const duration = deadlineSec - nowSec;
-    if (duration <= 0) return 86400; // fallback 24h
-    const MIN_RW = 86400;     // 24h
-    const MAX_RW = 604800;    // 7d
-    let window = Math.floor(duration / 5);
-    if (window < MIN_RW) window = MIN_RW;
-    if (window > MAX_RW) window = MAX_RW;
-    return window;
-  }
-
-  function fmtSecs(s) {
-    const d = Math.floor(s / 86400);
-    const h = Math.floor((s % 86400) / 3600);
-    if (d > 0 && h > 0) return `${d}d ${h}h`;
-    if (d > 0) return `${d}d`;
-    return `${h}h`;
-  }
-
-  // ERC20 decimals — fetched from contract; default 6 (USDC) until resolved
-  const [erc20Decimals, setErc20Decimals] = useState(6);
-  useEffect(() => {
-    if (form.rewardType !== 1) return;
-    const tokenAddr = form.rewardToken || ADDRESSES.usdc;
-    if (!tokenAddr) return;
-    let cancelled = false;
-    getReadContract(tokenAddr, ['function decimals() view returns (uint8)'])
-      .decimals()
-      .then(d => { if (!cancelled) setErc20Decimals(Number(d)); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [form.rewardType, form.rewardToken]);
-
-  const totalWei  = (() => {
-    try {
-      if (!form.rewardAmount || parseFloat(form.rewardAmount) <= 0) return 0n;
-      return form.rewardType === 0
-        ? ethers.parseEther(form.rewardAmount)
-        : ethers.parseUnits(form.rewardAmount, erc20Decimals);
-    } catch { return 0n; }
-  })();
-
-  const MIN_POSTER_STAKE = ethers.parseEther('0.005');
-
-  // Fetch exact poster stake from contract so msg.value matches exactly (avoids "wrong MON amount" revert)
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchStake() {
-      if (!ADDRESSES.factory) return;
-      // ERC20 bounties: stake is always MIN_POSTER_STAKE (flat MON), no need to query
-      if (form.rewardType === 1) {
-        setPosterStakeWei(MIN_POSTER_STAKE);
-        return;
-      }
-      if (totalWei === 0n) {
-        setPosterStakeWei(MIN_POSTER_STAKE);
-        return;
-      }
-      try {
-        const factory = getReadContract(ADDRESSES.factory, ['function getPosterStake(uint256) pure returns (uint256)']);
-        const stake = await factory.getPosterStake(totalWei);
-        if (!cancelled) setPosterStakeWei(stake);
-      } catch {
-        // fallback: local calculation mirrors contract formula
-        const POSTER_STAKE_BPS = 500n;
-        const pct = (totalWei * POSTER_STAKE_BPS) / 10_000n;
-        if (!cancelled) setPosterStakeWei(pct < MIN_POSTER_STAKE ? MIN_POSTER_STAKE : pct);
-      }
-    }
-    fetchStake();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalWei, form.rewardType]);
-
-  const posterStakeMon = parseFloat(ethers.formatEther(posterStakeWei)).toFixed(4);
-
-  const handlePublish = async () => {
-    if (!wc || !address)  { toast('Connect wallet first', 'warning'); return; }
-    if (!form.title.trim()) { toast('Title required', 'error'); return; }
-    if (!form.rewardAmount || parseFloat(form.rewardAmount) <= 0) { toast('Enter reward amount', 'error'); return; }
-    if (!deadline || deadline < Math.floor(Date.now() / 1000) + 3600) { toast('Deadline must be at least 1 hour from now', 'error'); return; }
-    // Use 179 days + 12h as the frontend guard (contract uses strictly < 180 days from block.timestamp which is always slightly ahead)
-    if (deadline > Math.floor(Date.now() / 1000) + 179 * 86400 + 43200) { toast('Deadline cannot exceed 180 days. Please pick a date at most 179 days ahead.', 'error'); return; }
-    if (weightSum !== 100) { toast('Prize weights must sum to 100', 'error'); return; }
-
-    try {
-      setSub(true);
-
-      let ipfsHash = '';
-      try {
-        toast('Uploading to IPFS…', 'info');
-        ipfsHash = await uploadJSON(buildBountyMeta({
-          title:              form.title,
-          shortDescription:   form.shortDescription,
-          fullDescription:    form.description,
-          requirements:       form.requirements.filter(Boolean),
-          evaluationCriteria: form.evaluationCriteria.filter(Boolean),
-          skills:             form.skills.split(',').map(s => s.trim()).filter(Boolean),
-          estimatedHours:     form.estimatedHours ? Number(form.estimatedHours) : null,
-          contactInfo:        form.contactInfo,
-          category:           form.category,
-        }), 'bounty-' + Date.now());
-      } catch (ipfsErr) {
-        if (ipfsErr.message === 'IPFS_NOT_CONFIGURED') {
-          toast('Pinata not configured — continuing without IPFS.', 'warning');
-        } else if (ipfsErr.message === 'IPFS_AUTH_FAILED') {
-          toast('Pinata key invalid. Check VITE_PINATA_* in .env', 'error');
-          setSub(false); return;
-        } else {
-          throw ipfsErr;
-        }
-      }
-
-      toast('Confirm transaction in wallet…', 'info');
-      const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, wc);
-
-      // Re-fetch poster stake immediately before sending to guarantee exact match with contract
-      let finalPosterStake = posterStakeWei;
-      if (form.rewardType === 0 && totalWei > 0n) {
-        try {
-          const roFactory = getReadContract(ADDRESSES.factory, ['function getPosterStake(uint256) pure returns (uint256)']);
-          finalPosterStake = await roFactory.getPosterStake(totalWei);
-          setPosterStakeWei(finalPosterStake);
-        } catch { /* keep current posterStakeWei */ }
-      }
-
-      // V2 createBounty signature: (ipfsHash, title, category, rewardType, rewardToken, totalReward, winnerCount, prizeWeights, deadline)
-      let tx;
-      if (form.rewardType === 0) {
-        // V3: msg.value = totalReward + posterStake (exact match required by contract)
-        tx = await factory.createBounty(
-          ipfsHash, form.title, form.category,
-          0,                         // rewardType = NATIVE
-          ethers.ZeroAddress,        // rewardToken = not used for native
-          totalWei, form.winnerCount, form.prizeWeights,
-          deadline,
-          { value: totalWei + finalPosterStake }
-        );
-      } else {
-        const rewardToken = form.rewardToken || ADDRESSES.usdc;
-        if (!rewardToken) { toast('No ERC20 token address configured', 'error'); setSub(false); return; }
-        const erc20 = await getContract(rewardToken, ERC20_ABI, wc);
-        const allowance = await erc20.allowance(address, ADDRESSES.factory);
-        if (allowance < totalWei) {
-          toast('Approving token spend…', 'info');
-          // Some tokens (e.g. USDT) require resetting allowance to 0 before increasing
-          if (allowance > 0n) {
-            try { await (await erc20.approve(ADDRESSES.factory, 0n)).wait(); } catch {}
-          }
-          await (await erc20.approve(ADDRESSES.factory, totalWei)).wait();
-        }
-        // V3 ERC20: msg.value = posterStake in MON (flat MIN_POSTER_STAKE)
-        tx = await factory.createBounty(
-          ipfsHash, form.title, form.category,
-          1,              // rewardType = ERC20
-          rewardToken,
-          totalWei, form.winnerCount, form.prizeWeights,
-          deadline,
-          { value: finalPosterStake }
-        );
-      }
-
-      await tx.wait();
-      toast('Bounty created!', 'success');
-      window.location.hash = '#/';
-    } catch (err) {
-      console.error(err);
-      toast('Failed: ' + (err.reason || err.shortMessage || err.message || 'Unknown error'), 'error');
-    } finally {
-      setSub(false);
-    }
-  };
-
-  const inputStyle = {
-    background: t.colors.bg.base, border: '1px solid ' + t.colors.border.default,
-    borderRadius: t.radius.md, padding: '9px 13px', color: t.colors.text.primary,
-    fontFamily: t.fonts.body, fontSize: '13px', outline: 'none', width: '100%',
-  };
-
-  const rewardSymbol = form.rewardType === 0 ? 'MON' : 'USDC';
-
-  if (!address) return (
-    <div>
-      <div style={{ padding: '6rem 1rem', textAlign: 'center' }}>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px', color: t.colors.text.faint }}>
-          <IconTarget size={40} />
-        </div>
-        <h2 style={{ fontWeight: 700, fontSize: '22px', color: t.colors.text.primary, marginBottom: '8px', letterSpacing: '-0.02em' }}>Post a Bounty</h2>
-        <p style={{ color: t.colors.text.muted, fontSize: '14px', maxWidth: '360px', margin: '0 auto 24px', lineHeight: 1.7 }}>
-          Connect your wallet to fund tasks for the Monad ecosystem.
-        </p>
-        <button
-          onClick={openConnectModal}
-          style={{
-            background: t.colors.violet[600],
-            color: '#fff',
-            border: 'none',
-            borderRadius: t.radius.md,
-            padding: '10px 24px',
-            fontSize: '13.5px',
-            fontWeight: 600,
-            cursor: 'pointer',
-            letterSpacing: '-0.01em',
-            transition: 'background 0.12s ease',
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = t.colors.violet[700]}
-          onMouseLeave={e => e.currentTarget.style.background = t.colors.violet[600]}
-        >
-          Connect Wallet
-        </button>
-      </div>
+function FieldLabel({ children, hint, required }) {
+  return (
+    <div style={{ marginBottom: 7 }}>
+      <label style={{
+        fontFamily: theme.fonts.body, fontSize: 13,
+        fontWeight: 500, color: theme.colors.text.secondary,
+        letterSpacing: '-0.01em',
+      }}>
+        {children}
+        {required && <span style={{ color: theme.colors.primary, marginLeft: 3 }}>*</span>}
+      </label>
+      {hint && (
+        <div style={{
+          fontFamily: theme.fonts.body, fontSize: 11.5,
+          color: theme.colors.text.faint, marginTop: 2,
+        }}>{hint}</div>
+      )}
     </div>
   );
+}
+
+function FormInput({ label, hint, required, error, ...props }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <div>
+      {label && <FieldLabel hint={hint} required={required}>{label}</FieldLabel>}
+      <input
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{
+          width: '100%', padding: '10px 14px',
+          background: theme.colors.bg.input,
+          color: theme.colors.text.primary,
+          border: `1px solid ${error ? theme.colors.red[500] : focused ? theme.colors.primary : theme.colors.border.default}`,
+          borderRadius: theme.radius.md, fontSize: 14,
+          fontFamily: theme.fonts.body, outline: 'none',
+          boxShadow: focused ? (error ? `0 0 0 3px ${theme.colors.red.dim}` : `0 0 0 3px ${theme.colors.primaryDim}`) : 'none',
+          transition: theme.transition, boxSizing: 'border-box',
+        }}
+        {...props}
+      />
+      {error && (
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
+function FormTextarea({ label, hint, required, error, minHeight = 120, ...props }) {
+  const [focused, setFocused] = useState(false);
+  const ref = useRef(null);
+
+  // Auto-resize
+  const handleInput = (e) => {
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = Math.max(minHeight, el.scrollHeight) + 'px';
+    if (props.onChange) props.onChange(e);
+  };
 
   return (
     <div>
-      <div className="container-sm" style={{ padding: 'clamp(1.5rem, 4vw, 3rem) clamp(1rem, 4vw, 2rem)' }}>
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}>
+      {label && <FieldLabel hint={hint} required={required}>{label}</FieldLabel>}
+      <textarea
+        ref={ref}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onChange={handleInput}
+        style={{
+          width: '100%', padding: '10px 14px',
+          background: theme.colors.bg.input,
+          color: theme.colors.text.primary,
+          border: `1px solid ${error ? theme.colors.red[500] : focused ? theme.colors.primary : theme.colors.border.default}`,
+          borderRadius: theme.radius.md, fontSize: 14,
+          fontFamily: theme.fonts.body, outline: 'none',
+          lineHeight: 1.7, resize: 'none',
+          boxShadow: focused ? (error ? `0 0 0 3px ${theme.colors.red.dim}` : `0 0 0 3px ${theme.colors.primaryDim}`) : 'none',
+          transition: 'border-color 0.15s, box-shadow 0.15s',
+          minHeight, overflow: 'hidden', boxSizing: 'border-box',
+        }}
+        {...props}
+      />
+      {error && (
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{error}</div>
+      )}
+    </div>
+  );
+}
 
-          {/* Header */}
-          <div style={{ marginBottom: '2rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <h1 style={{ fontWeight: 700, fontSize: 'clamp(22px, 3.5vw, 30px)', color: t.colors.text.primary, letterSpacing: '-0.025em', marginBottom: '6px' }}>Post a Bounty</h1>
-                <p style={{ color: t.colors.text.muted, fontSize: '13px' }}>Lock rewards in escrow and fund work from the Monad community.</p>
-              </div>
-              {/* Load template button — only shown when templates exist */}
-              {templates.length > 0 && (
-                <button onClick={() => setShowTemplates(p => !p)} style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)', color: '#818cf8', borderRadius: t.radius.md, padding: '7px 14px', fontSize: '12px', cursor: 'pointer', transition: t.transition, alignSelf: 'flex-start' }}>
-                  {showTemplates ? 'Hide Templates' : (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                  <IconFolder size={12} />
-                  Templates ({templates.length})
-                </span>
-              )}
-                </button>
-              )}
+// Dynamic list editor (requirements / deliverables)
+function ListEditor({ label, hint, required, items, onChange, placeholder, maxItems = 8 }) {
+  const addItem    = () => { if (items.length < maxItems) onChange([...items, '']); };
+  const removeItem = (i) => onChange(items.filter((_, idx) => idx !== i));
+  const editItem   = (i, v) => onChange(items.map((x, idx) => idx === i ? v : x));
+
+  return (
+    <div>
+      <FieldLabel hint={hint} required={required}>{label}</FieldLabel>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((item, i) => (
+          <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{
+              fontFamily: theme.fonts.mono, fontSize: 10,
+              color: theme.colors.text.faint, width: 18, flexShrink: 0, textAlign: 'right',
+            }}>{i + 1}.</span>
+            <ItemInput
+              value={item}
+              placeholder={placeholder}
+              onChange={(v) => editItem(i, v)}
+            />
+            {items.length > 1 && (
+              <button
+                onClick={() => removeItem(i)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: theme.colors.text.faint, fontSize: 14, padding: '0 2px',
+                  flexShrink: 0, lineHeight: 1,
+                  transition: theme.transition,
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = theme.colors.red[400]}
+                onMouseLeave={e => e.currentTarget.style.color = theme.colors.text.faint}
+                title="Remove"
+              ><IconX size={14} color="currentColor" /></button>
+            )}
+          </div>
+        ))}
+        {items.length < maxItems && (
+          <button
+            onClick={addItem}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'none', border: `1px dashed ${theme.colors.border.default}`,
+              borderRadius: theme.radius.md, padding: '7px 12px',
+              color: theme.colors.text.faint, fontSize: 12,
+              fontFamily: theme.fonts.body, cursor: 'pointer',
+              transition: theme.transition, marginTop: 2,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = theme.colors.primary; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.color = theme.colors.text.faint; }}
+          >
+            <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Add item
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ItemInput({ value, placeholder, onChange }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={{
+        flex: 1, padding: '8px 12px',
+        background: theme.colors.bg.input,
+        color: theme.colors.text.primary,
+        border: `1px solid ${focused ? theme.colors.primary : theme.colors.border.default}`,
+        borderRadius: theme.radius.md, fontSize: 13.5,
+        fontFamily: theme.fonts.body, outline: 'none',
+        boxShadow: focused ? `0 0 0 3px ${theme.colors.primaryDim}` : 'none',
+        transition: theme.transition, boxSizing: 'border-box',
+      }}
+    />
+  );
+}
+
+function ReviewRow({ label, value, mono, accent, last }) {
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+      padding: '11px 18px', gap: 20,
+      borderBottom: last ? 'none' : `1px solid ${theme.colors.border.faint}`,
+    }}>
+      <span style={{
+        fontFamily: theme.fonts.mono, fontSize: 10,
+        color: theme.colors.text.faint, textTransform: 'uppercase',
+        letterSpacing: '0.06em', flexShrink: 0, paddingTop: 1,
+      }}>{label}</span>
+      <span style={{
+        fontFamily: mono ? theme.fonts.mono : theme.fonts.body,
+        fontSize: mono ? 12 : 13,
+        color: accent ? theme.colors.primary : theme.colors.text.primary,
+        fontWeight: accent ? 600 : 400,
+        textAlign: 'right',
+      }}>{value}</span>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+export default function PostBountyPage() {
+  const { isConnected, address } = useAccount();
+  const { data: walletClient }   = useWalletClient();
+  const [step, setStep]     = useState(0);
+  const [form, setForm]     = useState(INITIAL_FORM);
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading]   = useState(false);
+  const [done, setDone]         = useState(false);
+  const [creatorStake, setCreatorStake] = useState(null); // fetched from contract
+  const formRef = useRef(null);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Fetch creator stake estimate when reward changes
+  useEffect(() => {
+    if (!form.reward || isNaN(parseFloat(form.reward))) { setCreatorStake(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!ADDRESSES.factory) return;
+        // Use a read-only call — no wallet needed
+        const { ethers: e } = await import('ethers');
+        const { getReadContract } = await import('../utils/ethers');
+        const factory = getReadContract(ADDRESSES.factory, FACTORY_ABI);
+        const [bps, min] = await Promise.all([
+          factory.CREATOR_STAKE_BPS().catch(() => 500n),
+          factory.MIN_CREATOR_STAKE().catch(() => e.parseEther('0.01')),
+        ]);
+        if (cancelled) return;
+        const rewardWei = e.parseEther(form.reward);
+        const calc = rewardWei * BigInt(bps) / 10000n;
+        const stake = calc > min ? calc : min;
+        setCreatorStake(stake);
+      } catch {
+        setCreatorStake(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [form.reward]);
+
+  const totalLocked = (() => {
+    if (!form.reward || isNaN(parseFloat(form.reward))) return null;
+    try {
+      const rewardWei = ethers.parseEther(form.reward);
+      const stake = creatorStake || (rewardWei * 500n / 10000n);
+      return rewardWei + stake;
+    } catch { return null; }
+  })();
+
+  // Validation
+  const validateStep0 = () => {
+    const e = {};
+    if (!form.title.trim()) e.title = 'Title is required';
+    else if (form.title.length > 120) e.title = 'Title max 120 characters';
+    if (!form.description.trim()) e.description = 'Description is required';
+    else if (form.description.length < 30) e.description = 'At least 30 characters — describe the task clearly';
+    const reqs = form.requirements.filter(r => r.trim());
+    if (reqs.length === 0) e.requirements = 'Add at least one requirement';
+    setErrors(e); return Object.keys(e).length === 0;
+  };
+
+  const validateStep1 = () => {
+    const e = {};
+    const r = parseFloat(form.reward);
+    if (!form.reward || isNaN(r) || r <= 0) e.reward = 'Enter a valid reward amount (e.g. 1.5)';
+    if (r > 0 && r < 0.001) e.reward = 'Minimum reward is 0.001 MON';
+    if (!form.deadline) e.deadline = 'Deadline is required';
+    else {
+      const dl = new Date(form.deadline).getTime();
+      if (dl <= Date.now() + 3600_000) e.deadline = 'Deadline must be at least 1 hour from now';
+    }
+    const wc = parseInt(form.winnerCount);
+    if (isNaN(wc) || wc < 1 || wc > 3) e.winnerCount = 'Winners must be 1, 2, or 3';
+    setErrors(e); return Object.keys(e).length === 0;
+  };
+
+  const handleNext = () => {
+    if (step === 0 && !validateStep0()) {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (step === 1 && !validateStep1()) {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setStep(s => s + 1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleBack = () => {
+    setStep(s => s - 1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSubmit = async () => {
+    if (!walletClient || !address) { toast('Connect your wallet first.', 'error'); return; }
+    if (!ADDRESSES.factory) { toast('Contract address not configured.', 'error'); return; }
+
+    setLoading(true);
+    try {
+      toast('Uploading metadata to IPFS…', 'info');
+
+      const skills = form.skills
+        ? form.skills.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+      const requirements = form.requirements.filter(r => r.trim());
+      const deliverables = form.deliverables.filter(d => d.trim());
+
+      const meta = buildBountyMeta({
+        title:           form.title.trim(),
+        fullDescription: form.description.trim(),
+        requirements,
+        evaluationCriteria: deliverables,
+        skills,
+        contactInfo: form.contactInfo.trim(),
+        category:    form.category,
+      });
+      const ipfsHash = await uploadJSON(meta, `bounty-${Date.now()}`);
+
+      const rewardWei    = ethers.parseEther(form.reward);
+      const deadlineTs   = BigInt(Math.floor(new Date(form.deadline).getTime() / 1000));
+      const winnerCount  = parseInt(form.winnerCount) || 1;
+
+      // Equal split for multi-winner
+      const baseWeight   = Math.floor(100 / winnerCount);
+      const prizeWeights = Array(winnerCount).fill(baseWeight);
+      prizeWeights[0]   += 100 - baseWeight * winnerCount; // remainder to first
+
+      toast('Confirm transaction in your wallet…', 'info');
+      const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, walletClient);
+
+      const creatorStakeBps = await factory.CREATOR_STAKE_BPS().catch(() => 300n);
+      const minCreatorStake = await factory.MIN_CREATOR_STAKE().catch(() => ethers.parseEther('0.01'));
+      const maxCreatorStake = await factory.MAX_CREATOR_STAKE().catch(() => ethers.parseEther('50'));
+      const calcStake = rewardWei * BigInt(creatorStakeBps) / 10000n;
+      let stake = calcStake < minCreatorStake ? minCreatorStake : calcStake;
+      if (stake > maxCreatorStake) stake = maxCreatorStake;
+      const totalValue = rewardWei + stake;
+
+      const tx = await factory.createBounty(
+        ipfsHash,
+        form.title.trim(),
+        form.category.toLowerCase(),
+        0,                           // rewardType NATIVE
+        ethers.ZeroAddress,          // rewardToken
+        rewardWei,
+        winnerCount,
+        prizeWeights,
+        deadlineTs,
+        form.requiresApplication,    // V4: curated flag
+        { value: totalValue }
+      );
+      toast('Transaction submitted, waiting for confirmation…', 'info');
+      await tx.wait();
+      requestNotificationRefresh();
+      toast('Bounty posted! Funds are now locked on-chain.', 'success');
+      setDone(true);
+    } catch (err) {
+      console.error('[PostBounty]', err);
+      toast('Failed: ' + (err.reason || err.shortMessage || err.message || 'Unknown error'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetForm = () => {
+    setDone(false); setStep(0);
+    setForm(INITIAL_FORM); setErrors({});
+    setCreatorStake(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // ── Not connected ──────────────────────────────────────────────────────────
+  if (!isConnected) {
+    return (
+      <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: '50%',
+          background: theme.colors.primaryDim, border: `1px solid ${theme.colors.primaryBorder}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 24px', fontSize: 24,
+        }}>◎</div>
+        <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 22, letterSpacing: '-0.03em', color: theme.colors.text.primary, marginBottom: 10 }}>Connect your wallet</h2>
+        <p style={{ fontSize: 13.5, color: theme.colors.text.muted, fontWeight: 300, lineHeight: 1.7 }}>
+          You need a connected wallet to post a bounty and lock reward funds on-chain.
+        </p>
+      </div>
+    );
+  }
+
+  // ── Done ───────────────────────────────────────────────────────────────────
+  if (done) {
+    return (
+      <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
+        <div style={{
+          width: 72, height: 72, borderRadius: '50%',
+          background: theme.colors.primaryDim, border: `1px solid ${theme.colors.primaryBorder}`,
+          boxShadow: `0 0 48px ${theme.colors.primaryGlow}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 28px', fontSize: 28, color: theme.colors.primary,
+        }}>◉</div>
+        <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 800, fontSize: 28, letterSpacing: '-0.04em', color: theme.colors.text.primary, marginBottom: 10 }}>Bounty Posted!</h2>
+        <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, marginBottom: 32, lineHeight: 1.7 }}>
+          Your bounty is live on Monad. Funds are locked in the smart contract — builders can start submitting work.
+        </p>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+          <Button variant="primary" onClick={() => { window.location.hash = '#/bounties'; }}>
+            Browse Bounties
+          </Button>
+          <Button variant="secondary" onClick={resetForm}>Post Another</Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Form ───────────────────────────────────────────────────────────────────
+  return (
+    <div
+      ref={formRef}
+      style={{ maxWidth: 680, margin: '0 auto', padding: 'clamp(32px,5vw,56px) clamp(16px,4vw,40px)' }}
+    >
+      {/* Page header */}
+      <div style={{ marginBottom: 32 }}>
+        <div className="page-eyebrow">Post a Bounty</div>
+        <h1 style={{
+          fontFamily: theme.fonts.body, fontWeight: 800,
+          fontSize: 'clamp(26px,4vw,38px)', letterSpacing: '-0.04em',
+          color: theme.colors.text.primary, marginBottom: 6,
+        }}>
+          {step === 0 ? 'Describe the task' : step === 1 ? 'Set reward & deadline' : 'Review & confirm'}
+        </h1>
+        <p style={{ fontSize: 13.5, color: theme.colors.text.muted, fontWeight: 300 }}>
+          {step === 0 && 'Help builders understand exactly what you need.'}
+          {step === 1 && 'Define the reward, number of winners, and deadline.'}
+          {step === 2 && 'Review everything before locking funds on-chain.'}
+        </p>
+      </div>
+
+      <StepIndicator current={step} />
+
+      {/* ── Step 0: Task ──────────────────────────────────────────────────── */}
+      {step === 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+
+          {/* Title */}
+          <FormInput
+            label="Title" required
+            placeholder="e.g. Build a Monad DEX aggregator UI"
+            value={form.title}
+            onChange={e => set('title', e.target.value)}
+            error={errors.title}
+          />
+
+          {/* Category */}
+          <div>
+            <FieldLabel>Category</FieldLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+              {CATEGORIES.map(c => {
+                const active = form.category === c.key;
+                return (
+                  <button
+                    key={c.key}
+                    onClick={() => set('category', c.key)}
+                    style={{
+                      padding: '10px 14px', textAlign: 'left',
+                      background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
+                      color: active ? theme.colors.primary : theme.colors.text.secondary,
+                      border: `1px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                      borderRadius: theme.radius.md, cursor: 'pointer',
+                      transition: theme.transition,
+                      boxShadow: active ? `0 0 0 1px ${theme.colors.primary}` : 'none',
+                    }}
+                    onMouseEnter={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.background = theme.colors.bg.hover; } }}
+                    onMouseLeave={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.elevated; } }}
+                  >
+                    <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'center' }}><c.Icon size={20} color={active ? theme.colors.primary : theme.colors.text.muted} /></div>
+                    <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13 }}>{c.key}</div>
+                    <div style={{ fontFamily: theme.fonts.body, fontSize: 10.5, color: active ? `${theme.colors.primary}99` : theme.colors.text.faint, marginTop: 2 }}>{c.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Description */}
+          <FormTextarea
+            label="Overview" required
+            hint="Describe the project context and what needs to be built or done."
+            placeholder="Provide a clear overview of the task, technical context, and goals. The more specific you are, the better submissions you'll receive."
+            value={form.description}
+            onChange={e => set('description', e.target.value)}
+            error={errors.description}
+            minHeight={130}
+          />
+
+          {/* Requirements */}
+          <div>
+            <ListEditor
+              label="Requirements" required
+              hint="Step-by-step tasks the builder must complete."
+              items={form.requirements}
+              onChange={v => set('requirements', v)}
+              placeholder="e.g. Implement ERC-20 token swap using Uniswap V3"
+            />
+            {errors.requirements && (
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{errors.requirements}</div>
+            )}
+          </div>
+
+          {/* Deliverables */}
+          <ListEditor
+            label="Deliverables"
+            hint="What the builder must submit as proof of work."
+            items={form.deliverables}
+            onChange={v => set('deliverables', v)}
+            placeholder="e.g. GitHub repo with tests, Loom walkthrough video"
+          />
+
+          {/* Skills */}
+          <FormInput
+            label="Required Skills"
+            hint="Comma-separated. Helps builders self-select."
+            placeholder="e.g. Solidity, React, TypeScript, ethers.js"
+            value={form.skills}
+            onChange={e => set('skills', e.target.value)}
+          />
+        </div>
+      )}
+
+      {/* ── Step 1: Reward ────────────────────────────────────────────────── */}
+      {step === 1 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+
+          {/* Reward */}
+          <div className="reward-amount-field">
+            <FieldLabel required hint="Reward paid to the winner(s). Denominated in MON.">Reward Amount</FieldLabel>
+            <div style={{ position: 'relative' }}>
+              <FormInput
+                placeholder="e.g. 2.5"
+                type="number" min="0.001" step="0.1" inputMode="decimal"
+                value={form.reward}
+                onChange={e => {
+                  set('reward', e.target.value);
+                  const r = parseFloat(e.target.value);
+                  if (errors.reward && r > 0 && !isNaN(r) && r >= 0.001) {
+                    setErrors(prev => { const n = { ...prev }; delete n.reward; return n; });
+                  }
+                }}
+                error={errors.reward}
+              />
+              <span style={{
+                position: 'absolute', right: 14, top: '50%',
+                transform: `translateY(${errors.reward ? '-60%' : '-50%'})`,
+                fontFamily: theme.fonts.mono, fontSize: 12,
+                color: theme.colors.text.muted, pointerEvents: 'none',
+              }}>MON</span>
             </div>
 
-            {/* Templates panel */}
-            {showTemplates && templates.length > 0 && (
-              <div style={{ marginTop: '12px', padding: '14px', background: t.colors.bg.card, border: '1px solid ' + t.colors.border.default, borderRadius: t.radius.md }}>
-                <div style={{ fontSize: '11px', color: t.colors.text.muted, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '10px' }}>Saved Templates</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {templates.map(tmpl => (
-                    <div key={tmpl.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: t.colors.bg.elevated, borderRadius: t.radius.sm, border: '1px solid ' + t.colors.border.subtle }}>
-                      <span style={{ fontSize: '13px', color: t.colors.text.primary }}>{tmpl.name}</span>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button onClick={() => handleLoadTemplate(tmpl)} style={{ fontSize: '12px', color: '#818cf8', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}>Load</button>
-                        <button onClick={() => handleDeleteTemplate(tmpl.id)} style={{ fontSize: '12px', color: '#f87171', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}>Delete</button>
-                      </div>
-                    </div>
-                  ))}
+            {/* Cost breakdown */}
+            {form.reward && !isNaN(parseFloat(form.reward)) && parseFloat(form.reward) > 0 && (
+              <div style={{
+                marginTop: 10, padding: '12px 14px',
+                background: theme.colors.bg.card,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.md,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 10.5, color: theme.colors.text.faint, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Reward</span>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 11.5, color: theme.colors.text.secondary }}>{parseFloat(form.reward).toFixed(4)} MON</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${theme.colors.border.faint}` }}>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 10.5, color: theme.colors.text.faint, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Creator Stake (~3%, max 50 MON)</span>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 11.5, color: theme.colors.text.muted }}>
+                    {creatorStake
+                      ? (Number(creatorStake) / 1e18).toFixed(4)
+                      : Math.min(parseFloat(form.reward) * 0.03, 50).toFixed(4)
+                    } MON
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 10.5, color: theme.colors.text.secondary, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Total Required</span>
+                  <span style={{ fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.primary, fontWeight: 600 }}>
+                    {totalLocked
+                      ? (Number(totalLocked) / 1e18).toFixed(4)
+                      : (parseFloat(form.reward) + Math.min(parseFloat(form.reward) * 0.03, 50)).toFixed(4)
+                    } MON
+                  </span>
+                </div>
+                <div style={{ marginTop: 8, fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, lineHeight: 1.5 }}>
+                  Creator stake is returned when the bounty completes. If abandoned, it goes to the protocol.
                 </div>
               </div>
             )}
           </div>
 
-          <StepBar current={step} />
-
-          <AnimatePresence mode="wait">
-
-            {/* ── STEP 1: Details ── */}
-            {step === 0 && (
-              <motion.div key="step0" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} transition={{ duration: 0.22 }}>
-                <Card>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-                    <Input label="Bounty Title *" placeholder="e.g. Build a staking dashboard for Monad" value={form.title} onChange={e => set('title', e.target.value)} maxLength={100} />
-
-                    <Input label="Short Description (optional)" placeholder="One-line summary shown in preview cards (max 160 chars)" value={form.shortDescription} onChange={e => set('shortDescription', e.target.value)} maxLength={160} />
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '7px' }}>Category</label>
-                        <select value={form.category} onChange={e => set('category', e.target.value)} style={inputStyle}>
-                          {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c] || c}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '7px' }}>
-                          Estimated Hours
-                          <span style={{ fontWeight: 400, color: t.colors.text.muted, marginLeft: '5px' }}>(optional)</span>
-                        </label>
-                        <input type="number" min="1" max="1000" value={form.estimatedHours} onChange={e => set('estimatedHours', e.target.value)} placeholder="e.g. 20" style={inputStyle} />
-                      </div>
-                    </div>
-
-                    {/* Description (Markdown supported) */}
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '7px' }}>
-                        Full Description *
-                        <span style={{ fontWeight: 400, color: t.colors.text.muted, marginLeft: '5px' }}>Markdown supported</span>
-                      </label>
-                      <textarea value={form.description} onChange={e => set('description', e.target.value)} rows={8}
-                        placeholder="Describe the task in detail. **Bold**, `code`, lists, etc. are supported."
-                        style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }} />
-                    </div>
-
-                    {/* Skills */}
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '7px' }}>
-                        Required Skills
-                        <span style={{ fontWeight: 400, color: t.colors.text.muted, marginLeft: '5px' }}>comma-separated</span>
-                      </label>
-                      <input value={form.skills} onChange={e => set('skills', e.target.value)} placeholder="e.g. Solidity, React, TypeScript" style={inputStyle} />
-                    </div>
-
-                    {/* Requirements */}
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '8px' }}>Requirements</label>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {form.requirements.map((r, i) => (
-                          <div key={i} style={{ display: 'flex', gap: '8px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '38px', flexShrink: 0 }}>
-                              <span style={{ fontFamily: t.fonts.mono, fontSize: '11px', color: '#7c3aed' }}>{String(i + 1).padStart(2, '0')}</span>
-                            </div>
-                            <input value={r} onChange={e => setReq(i, e.target.value)} placeholder="e.g. Must include source code" style={inputStyle} />
-                            {i > 0 && (
-                              <button onClick={() => removeReq(i)} style={{ width: '38px', height: '38px', flexShrink: 0, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: t.radius.sm, color: '#f87171', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      <button onClick={addReq} style={{ marginTop: '8px', background: 'none', border: '1px dashed ' + t.colors.border.default, borderRadius: t.radius.sm, padding: '7px 14px', color: t.colors.text.muted, cursor: 'pointer', fontSize: '12px', width: '100%', transition: t.transition }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = t.colors.border.hover; e.currentTarget.style.color = t.colors.text.secondary; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = t.colors.border.default; e.currentTarget.style.color = t.colors.text.muted; }}>
-                        + Add requirement
-                      </button>
-                    </div>
-
-                    {/* Evaluation criteria */}
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '8px' }}>Evaluation Criteria
-                        <span style={{ fontWeight: 400, color: t.colors.text.muted, marginLeft: '5px' }}>(how will you judge submissions?)</span>
-                      </label>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {form.evaluationCriteria.map((r, i) => (
-                          <div key={i} style={{ display: 'flex', gap: '8px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '38px', flexShrink: 0 }}>
-                              <span style={{ color: t.colors.green[400], display: 'flex', marginTop: '3px' }}><IconCheck size={11} color={t.colors.green[400]} /></span>
-                            </div>
-                            <input value={r} onChange={e => setCrit(i, e.target.value)} placeholder="e.g. Code quality and readability" style={inputStyle} />
-                            {i > 0 && (
-                              <button onClick={() => removeCrit(i)} style={{ width: '38px', height: '38px', flexShrink: 0, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: t.radius.sm, color: '#f87171', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      <button onClick={addCrit} style={{ marginTop: '8px', background: 'none', border: '1px dashed ' + t.colors.border.default, borderRadius: t.radius.sm, padding: '7px 14px', color: t.colors.text.muted, cursor: 'pointer', fontSize: '12px', width: '100%', transition: t.transition }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = t.colors.border.hover; e.currentTarget.style.color = t.colors.text.secondary; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = t.colors.border.default; e.currentTarget.style.color = t.colors.text.muted; }}>
-                        + Add criterion
-                      </button>
-                    </div>
-
-                    {/* Deadline + contact */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', alignItems: 'start' }}>
-                      <DeadlinePicker value={form.deadlineDate} onChange={v => set('deadlineDate', v)} />
-                      <div>
-                        <label style={{ fontSize: '13px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '4px' }}>
-                          Telegram / Discord Contact
-                          <span style={{ fontSize: '11px', color: t.colors.text.muted, fontWeight: 400, marginLeft: '5px' }}>optional</span>
-                        </label>
-                        <div style={{ fontSize: '11px', color: t.colors.text.muted, marginBottom: '8px' }}>Hunters can reach you with questions</div>
-                        <input value={form.contactInfo} onChange={e => set('contactInfo', e.target.value)} placeholder="e.g. @yourname (Telegram)" style={inputStyle} />
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                      <Button fullWidth size="lg" icon={<IconChevronRight size={15} />} onClick={() => setStep(1)}
-                        disabled={!form.title.trim() || !form.description.trim() || !form.deadlineDate}>
-                        Continue to Reward
-                      </Button>
-                      <button
-                        onClick={handleSaveTemplate}
-                        title="Save current form as a template"
-                        style={{
-                          flexShrink: 0,
-                          background: 'transparent',
-                          border: '1px solid ' + t.colors.border.default,
-                          color: t.colors.text.muted,
-                          borderRadius: t.radius.md,
-                          padding: '10px 14px',
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                          transition: 'border-color 0.12s ease, color 0.12s ease',
-                          whiteSpace: 'nowrap',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '5px',
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = t.colors.border.hover; e.currentTarget.style.color = t.colors.text.secondary; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = t.colors.border.default; e.currentTarget.style.color = t.colors.text.muted; }}
-                      >
-                        <IconSave size={12} />
-                        Save Template
-                      </button>
-                    </div>
-                  </div>
-                </Card>
-              </motion.div>
+          {/* Number of Winners */}
+          <div>
+            <FieldLabel hint="Up to 3 winners can be rewarded. Reward splits equally.">Number of Winners</FieldLabel>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {['1', '2', '3'].map(n => {
+                const active = form.winnerCount === n;
+                return (
+                  <button
+                    key={n}
+                    onClick={() => set('winnerCount', n)}
+                    style={{
+                      width: 56, height: 48,
+                      background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
+                      color: active ? theme.colors.primary : theme.colors.text.secondary,
+                      border: `1.5px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                      borderRadius: theme.radius.md,
+                      fontFamily: theme.fonts.mono, fontSize: 18, fontWeight: 600,
+                      cursor: 'pointer', transition: theme.transition,
+                    }}
+                  >{n}</button>
+                );
+              })}
+            </div>
+            {form.winnerCount !== '1' && form.reward && !isNaN(parseFloat(form.reward)) && (
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.faint, marginTop: 6 }}>
+                Each winner receives ~{(parseFloat(form.reward) / parseInt(form.winnerCount)).toFixed(4)} MON
+              </div>
             )}
+          </div>
 
-            {/* ── STEP 2: Reward ── */}
-            {step === 1 && (
-              <motion.div key="step1" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} transition={{ duration: 0.22 }}>
-                <Card>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-                    {/* Token selector */}
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary, display: 'block', marginBottom: '10px' }}>Reward Token</label>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                        {[
-                          { v: 0, l: 'MON',  sub: 'Native token' },
-                          { v: 1, l: 'USDC', sub: 'Stablecoin' },
-                        ].map(opt => (
-                          <button key={opt.v} onClick={() => set('rewardType', opt.v)} style={{
-                            padding: '16px', cursor: 'pointer', textAlign: 'left', transition: t.transition,
-                            background: form.rewardType === opt.v ? 'rgba(124,58,237,0.1)' : 'transparent',
-                            border: '2px solid ' + (form.rewardType === opt.v ? t.colors.primary : t.colors.border.default),
-                            borderRadius: t.radius.md,
-                          }}>
-                            <div style={{ fontSize: '16px', fontWeight: 700, color: form.rewardType === opt.v ? '#c7d2fe' : t.colors.text.primary, marginBottom: '3px', fontFamily: t.fonts.mono }}>{opt.l}</div>
-                            <div style={{ fontSize: '12px', color: t.colors.text.muted }}>{opt.sub}</div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <Input label={`Total Reward (${rewardSymbol}) *`} type="number" step="0.01" min="0"
-                      placeholder={form.rewardType === 0 ? 'e.g. 100' : 'e.g. 500'}
-                      value={form.rewardAmount}
-                      onChange={e => set('rewardAmount', e.target.value)} />
-
-                    {/* Winners — V2: max 3 */}
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                        <label style={{ fontSize: '12px', fontWeight: 500, color: t.colors.text.secondary }}>Number of Winners (max 3)</label>
-                        <span style={{ fontFamily: t.fonts.mono, fontSize: '16px', color: '#c7d2fe', fontWeight: 700 }}>{form.winnerCount}</span>
-                      </div>
-                      <input type="range" min={1} max={3} value={form.winnerCount}
-                        onChange={e => setWinnerCount(Number(e.target.value))}
-                        style={{ width: '100%', accentColor: t.colors.primary }} />
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: t.colors.text.muted, marginTop: '4px' }}>
-                        {[1, 2, 3].map(n => <span key={n}>{n}</span>)}
-                      </div>
-                    </div>
-
-                    {/* Prize split */}
-                    {form.winnerCount > 1 && (
-                      <div style={{ padding: '14px', background: t.colors.bg.elevated, borderRadius: t.radius.md, border: '1px solid ' + t.colors.border.subtle }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '12px' }}>
-                          <span style={{ color: t.colors.text.secondary, fontWeight: 500 }}>Prize Split</span>
-                          <span style={{ color: weightSum === 100 ? '#34d399' : '#f87171', fontFamily: t.fonts.mono }}>
-                            {weightSum}/100
-                          </span>
-                        </div>
-                        {form.prizeWeights.map((w, i) => (
-                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                            <span style={{ fontSize: '12px', color: t.colors.text.muted, width: '54px', flexShrink: 0 }}>#{i + 1} Place</span>
-                            <input type="number" min={0} max={100} value={w} onChange={e => updateWeight(i, e.target.value)} style={{ ...inputStyle, width: '70px' }} />
-                            <span style={{ fontSize: '12px', color: '#818cf8' }}>%</span>
-                            <div style={{ flex: 1, height: '4px', background: t.colors.border.default, borderRadius: '99px', overflow: 'hidden' }}>
-                              <div style={{ height: '100%', width: Math.min(w, 100) + '%', background: 'linear-gradient(90deg,#7c3aed,#8b5cf6)', borderRadius: '99px', transition: 'width 0.2s' }} />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Fee summary */}
-                    {form.rewardAmount && parseFloat(form.rewardAmount) > 0 && (
-                      <div style={{ padding: '14px', background: 'rgba(16,185,129,0.06)', borderRadius: t.radius.md, border: '1px solid rgba(16,185,129,0.15)' }}>
-                        <div style={{ fontSize: '12px', color: '#6ee7b7', fontWeight: 600, marginBottom: '8px' }}>Reward Summary</div>
-                        {[
-                          { label: 'You deposit',      value: parseFloat(form.rewardAmount).toFixed(4) + ' ' + rewardSymbol, color: t.colors.text.secondary },
-                          { label: 'Platform fee (3%)', value: '−' + (parseFloat(form.rewardAmount) * 0.03).toFixed(4) + ' ' + rewardSymbol, color: '#fb923c' },
-                          { label: 'Hunters receive',  value: (parseFloat(form.rewardAmount) * 0.97).toFixed(4) + ' ' + rewardSymbol, color: '#34d399' },
-                        ].map(row => (
-                          <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                            <span style={{ color: t.colors.text.muted }}>{row.label}</span>
-                            <span style={{ color: row.color, fontFamily: t.fonts.mono, fontWeight: 600 }}>{row.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <Button variant="ghost" icon={<IconBack size={14} />} onClick={() => setStep(0)}>Back</Button>
-                      <Button fullWidth size="lg" icon={<IconChevronRight size={15} />} onClick={() => setStep(2)}
-                        disabled={!form.rewardAmount || parseFloat(form.rewardAmount) <= 0 || weightSum !== 100}>
-                        Review
-                      </Button>
-                    </div>
-                  </div>
-                </Card>
-              </motion.div>
+          {/* Deadline — split date + time for cleaner, more consistent picker UI */}
+          <div>
+            <FieldLabel required hint="Builders have until this date to submit work.">Submission Deadline</FieldLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Date</label>
+                <input
+                  type="date"
+                  value={form.deadline ? form.deadline.slice(0, 10) : ''}
+                  min={new Date(Date.now() + 3600_000).toISOString().slice(0, 10)}
+                  onChange={e => {
+                    const d = e.target.value;
+                    const t = form.deadline ? form.deadline.slice(11, 16) : '12:00';
+                    set('deadline', d && t ? `${d}T${t}:00` : d || '');
+                    if (errors.deadline && d) setErrors(prev => { const n = { ...prev }; delete n.deadline; return n; });
+                  }}
+                  style={{
+                    width: '100%', padding: '10px 14px',
+                    background: theme.colors.bg.input, color: theme.colors.text.primary,
+                    border: `1px solid ${errors.deadline ? theme.colors.red[500] : theme.colors.border.default}`,
+                    borderRadius: theme.radius.md, fontSize: 14,
+                    fontFamily: theme.fonts.body, outline: 'none',
+                    boxSizing: 'border-box', colorScheme: 'dark',
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Time</label>
+                <input
+                  type="time"
+                  value={form.deadline ? form.deadline.slice(11, 16) : ''}
+                  onChange={e => {
+                    const t = e.target.value;
+                    const d = form.deadline ? form.deadline.slice(0, 10) : new Date(Date.now() + 3600_000).toISOString().slice(0, 10);
+                    set('deadline', d && t ? `${d}T${t}:00` : (form.deadline?.slice(0, 10) || ''));
+                    if (errors.deadline && t) setErrors(prev => { const n = { ...prev }; delete n.deadline; return n; });
+                  }}
+                  style={{
+                    width: '100%', padding: '10px 14px',
+                    background: theme.colors.bg.input, color: theme.colors.text.primary,
+                    border: `1px solid ${errors.deadline ? theme.colors.red[500] : theme.colors.border.default}`,
+                    borderRadius: theme.radius.md, fontSize: 14,
+                    fontFamily: theme.fonts.body, outline: 'none',
+                    boxSizing: 'border-box', colorScheme: 'dark',
+                  }}
+                />
+              </div>
+            </div>
+            {form.deadline && (
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.muted, marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <IconChevronRight size={12} color={theme.colors.text.muted} /> {new Date(form.deadline).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+              </div>
             )}
-
-            {/* ── STEP 3: Review ── */}
-            {step === 2 && (
-              <motion.div key="step2" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} transition={{ duration: 0.22 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-
-                  {/* Bounty title & meta */}
-                  <Card>
-                    <div style={{ fontSize: '12px', fontWeight: 600, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '8px' }}>Review &amp; Publish</div>
-                    <h2 style={{ fontSize: '20px', fontWeight: 700, color: t.colors.text.primary, letterSpacing: '-0.02em', marginBottom: '6px' }}>{form.title}</h2>
-                    {form.shortDescription && (
-                      <p style={{ fontSize: '13px', color: t.colors.text.muted, lineHeight: 1.6, marginBottom: '14px' }}>{form.shortDescription}</p>
-                    )}
-
-                    {/* Skills */}
-                    {form.skills && (
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '14px' }}>
-                        {form.skills.split(',').map(s => s.trim()).filter(Boolean).map(s => (
-                          <span key={s} style={{ fontSize: '11px', color: '#818cf8', background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.15)', padding: '2px 8px', borderRadius: '99px' }}>{s}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Key details table */}
-                    <div style={{ background: t.colors.bg.elevated, borderRadius: t.radius.md, border: '1px solid ' + t.colors.border.subtle }}>
-                      {[
-                        ['Category',       CATEGORY_LABELS[form.category] || form.category],
-                        ['Deadline',       form.deadlineDate ? new Date(form.deadlineDate).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' }) : '—'],
-                        ['Review window',  deadline ? fmtSecs(calcReviewWindowSecs(deadline)) + ' after deadline' : '—'],
-                        ['Reward',         form.rewardAmount + ' ' + rewardSymbol],
-                        ['Winners',        form.winnerCount + ' winner' + (form.winnerCount > 1 ? 's — ' + form.prizeWeights.join('/') + '%' : ' (you can approve fewer)')],
-                        ['Est. Hours',     form.estimatedHours ? form.estimatedHours + 'h' : '—'],
-                        ...(form.contactInfo ? [['Contact (Telegram/Discord)', form.contactInfo]] : []),
-                      ].map(([k, v], i, arr) => (
-                        <div key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: i < arr.length - 1 ? '1px solid ' + t.colors.border.subtle : 'none' }}>
-                          <span style={{ fontSize: '12px', color: t.colors.text.muted }}>{k}</span>
-                          <span style={{ fontSize: '13px', color: t.colors.text.primary, fontWeight: 500, textAlign: 'right', maxWidth: '65%' }}>{v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </Card>
-
-                  {/* Full description preview */}
-                  {form.description && (
-                    <Card>
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: t.colors.text.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '12px' }}>Description Preview</div>
-                      <div style={{ color: t.colors.text.secondary, fontSize: '13px', lineHeight: 1.8, whiteSpace: 'pre-wrap', maxHeight: '240px', overflowY: 'auto', paddingRight: '4px' }}>
-                        {form.description}
-                      </div>
-                    </Card>
-                  )}
-
-                  {/* Requirements preview */}
-                  {form.requirements.filter(Boolean).length > 0 && (
-                    <Card>
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: t.colors.text.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '12px' }}>Requirements</div>
-                      <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {form.requirements.filter(Boolean).map((r, i) => (
-                          <li key={i} style={{ display: 'flex', gap: '10px', fontSize: '13px', color: t.colors.text.secondary }}>
-                            <span style={{ color: '#7c3aed', fontFamily: t.fonts.mono, fontSize: '11px', flexShrink: 0, marginTop: '3px' }}>{String(i + 1).padStart(2, '0')}</span>
-                            {r}
-                          </li>
-                        ))}
-                      </ul>
-                    </Card>
-                  )}
-
-                  {/* Deposit summary — V3: shows reward + poster stake */}
-                  <div style={{ padding: '20px', background: 'rgba(124,58,237,0.08)', borderRadius: t.radius.md, border: '1px solid rgba(124,58,237,0.2)' }}>
-                    <div style={{ fontSize: '10px', color: '#818cf8', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '12px', textAlign: 'center' }}>Total you will deposit</div>
-                    <div style={{ textAlign: 'center', fontFamily: t.fonts.mono, fontSize: '30px', fontWeight: 700, color: '#c7d2fe', letterSpacing: '-0.02em', marginBottom: '14px' }}>
-                      {form.rewardType === 0 ? (parseFloat(form.rewardAmount || 0) + parseFloat(posterStakeMon)).toFixed(4) : form.rewardAmount} {rewardSymbol}
-                      {form.rewardType === 1 && <span style={{ fontSize: '16px', color: '#818cf8', marginLeft: '8px' }}>+ {posterStakeMon} MON stake</span>}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid rgba(124,58,237,0.15)', paddingTop: '12px' }}>
-                      {[
-                        { label: 'Bounty reward', value: `${form.rewardAmount || 0} ${rewardSymbol}`, color: '#c7d2fe' },
-                        { label: 'Poster stake (5% · refundable)', value: `${posterStakeMon} MON`, color: '#86efac' },
-                        { label: '→ Goes to winners (97%)', value: `${(parseFloat(form.rewardAmount || 0) * 0.97).toFixed(4)} ${rewardSymbol}`, color: '#818cf8' },
-                        { label: '→ Platform fee (3%)', value: `${(parseFloat(form.rewardAmount || 0) * 0.03).toFixed(4)} ${rewardSymbol}`, color: '#94a3b8' },
-                      ].map(({ label, value, color }) => (
-                        <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                          <span style={{ color: t.colors.text.muted }}>{label}</span>
-                          <span style={{ color, fontFamily: t.fonts.mono, fontWeight: 500 }}>{value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={{
-                    fontSize: '12px',
-                    color: t.colors.text.muted,
-                    padding: '10px 14px',
-                    background: t.colors.bg.elevated,
-                    borderRadius: t.radius.sm,
-                    lineHeight: 1.6,
-                    display: 'flex',
-                    gap: '8px',
-                    alignItems: 'flex-start',
-                  }}>
-                    <span style={{ color: t.colors.warning, display: 'flex', flexShrink: 0, marginTop: '1px' }}>
-                      <IconWarning size={13} color={t.colors.warning} />
-                    </span>
-                    Reward + your {posterStakeMon} MON poster stake will be locked in escrow. After the deadline you have a <strong style={{ color: t.colors.text.secondary }}>{deadline ? fmtSecs(calcReviewWindowSecs(deadline)) : '24h–7d'} review window</strong> to approve or reject submissions. The stake is fully refunded when you approve winners. If you cancel after hunters submit, the stake is forfeited as fraud deterrence.
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <Button variant="ghost" icon={<IconBack size={14} />} onClick={() => setStep(1)}>Back</Button>
-                    <Button fullWidth size="lg" loading={submitting} disabled={!wc} onClick={handlePublish}>
-                      {wc ? 'Create & Fund Bounty' : 'Waiting for wallet…'}
-                    </Button>
-                  </div>
-                </div>
-              </motion.div>
+            {errors.deadline && (
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{errors.deadline}</div>
             )}
+          </div>
 
-          </AnimatePresence>
-        </motion.div>
+          {/* Contact */}
+          <FormInput
+            label="Contact (optional)"
+            hint="Where builders can reach you for questions."
+            placeholder="@telegram_handle or discord username"
+            value={form.contactInfo}
+            onChange={e => set('contactInfo', e.target.value)}
+          />
+
+          {/* V4: Bounty type — Open or Curated */}
+          <div>
+            <FieldLabel hint="Open bounty: anyone with a username can submit. Curated project: builders apply first, you approve who can submit.">
+              Submission Mode
+            </FieldLabel>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {[
+                { val: false, Icon: IconBounties, label: 'Open Bounty',      desc: 'Any registered builder can submit directly.' },
+                { val: true,  Icon: IconTarget,   label: 'Curated Project',   desc: 'Builders apply first; you choose who proceeds.' },
+              ].map(opt => {
+                const active = form.requiresApplication === opt.val;
+                return (
+                  <button
+                    key={String(opt.val)}
+                    onClick={() => set('requiresApplication', opt.val)}
+                    style={{
+                      flex: 1, minWidth: 160,
+                      display: 'flex', flexDirection: 'column', gap: 4,
+                      padding: '12px 14px', textAlign: 'left',
+                      background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
+                      border: `1.5px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                      borderRadius: theme.radius.lg, cursor: 'pointer',
+                      transition: theme.transition,
+                    }}
+                    onMouseEnter={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.default; } }}
+                    onMouseLeave={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.subtle; } }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <opt.Icon size={16} color={active ? theme.colors.primary : theme.colors.text.muted} style={{ flexShrink: 0 }} />
+                      <span style={{
+                        fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13,
+                        color: active ? theme.colors.primaryLight : theme.colors.text.primary,
+                      }}>{opt.label}</span>
+                    </div>
+                    <span style={{
+                      fontFamily: theme.fonts.body, fontSize: 11.5,
+                      color: theme.colors.text.muted, lineHeight: 1.5,
+                    }}>{opt.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Escrow notice */}
+          <div style={{
+            padding: '14px 16px',
+            background: 'rgba(110,84,255,0.04)',
+            border: `1px solid ${theme.colors.primaryBorder}`,
+            borderRadius: theme.radius.md,
+            display: 'flex', gap: 12, alignItems: 'flex-start',
+          }}>
+            <IconBounties size={18} color={theme.colors.primary} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.primaryLight, fontWeight: 500, marginBottom: 3 }}>
+                Funds are locked trustlessly
+              </div>
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted, lineHeight: 1.6 }}>
+                When you post, the reward + creator stake will be locked into the smart contract. The contract automatically releases funds to the approved winner. If no winner is approved before the deadline, you can reclaim your reward.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 2: Review ────────────────────────────────────────────────── */}
+      {step === 2 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Summary card */}
+          <div style={{
+            background: theme.colors.bg.card,
+            border: `1px solid ${theme.colors.border.default}`,
+            borderRadius: theme.radius.xl, overflow: 'hidden',
+          }}>
+            <div style={{ padding: '10px 18px', background: theme.colors.bg.panel, borderBottom: `1px solid ${theme.colors.border.faint}` }}>
+              <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Bounty Summary</span>
+            </div>
+
+            <ReviewRow label="Title"    value={form.title} />
+            <ReviewRow label="Category" value={form.category} />
+            <ReviewRow label="Reward"   value={`${form.reward} MON`} accent mono />
+            {form.winnerCount !== '1' && <ReviewRow label="Winners" value={`${form.winnerCount} (equal split)`} mono />}
+            <ReviewRow label="Deadline" value={form.deadline ? new Date(form.deadline).toLocaleString() : '—'} />
+            <ReviewRow label="Mode"     value={form.requiresApplication ? 'Curated (apply-first)' : 'Open (direct submit)'} />
+            {form.contactInfo && <ReviewRow label="Contact" value={form.contactInfo} />}
+          </div>
+
+          {/* Description preview */}
+          {form.description?.trim() && (
+            <div style={{
+              background: theme.colors.bg.card,
+              border: `1px solid ${theme.colors.border.subtle}`,
+              borderRadius: theme.radius.lg, overflow: 'hidden',
+            }}>
+              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
+                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Description</span>
+              </div>
+              <div style={{ padding: '14px 18px', fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto' }}>
+                {form.description.trim()}
+              </div>
+            </div>
+          )}
+
+          {/* Requirements preview */}
+          {form.requirements.filter(r => r.trim()).length > 0 && (
+            <div style={{
+              background: theme.colors.bg.card,
+              border: `1px solid ${theme.colors.border.subtle}`,
+              borderRadius: theme.radius.lg, overflow: 'hidden',
+            }}>
+              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
+                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Requirements</span>
+              </div>
+              <div style={{ padding: '10px 18px' }}>
+                {form.requirements.filter(r => r.trim()).map((r, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, padding: '5px 0', borderBottom: i < form.requirements.filter(x=>x.trim()).length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none' }}>
+                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.primary, flexShrink: 0, marginTop: 2 }}>{i + 1}.</span>
+                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.5 }}>{r}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Deliverables preview */}
+          {form.deliverables.filter(d => d.trim()).length > 0 && (
+            <div style={{
+              background: theme.colors.bg.card,
+              border: `1px solid ${theme.colors.border.subtle}`,
+              borderRadius: theme.radius.lg, overflow: 'hidden',
+            }}>
+              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
+                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Deliverables</span>
+              </div>
+              <div style={{ padding: '10px 18px' }}>
+                {form.deliverables.filter(d => d.trim()).map((d, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, padding: '5px 0', borderBottom: i < form.deliverables.filter(x=>x.trim()).length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none' }}>
+                    <IconChevronRight size={10} color={theme.colors.cyan} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.5 }}>{d}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Cost summary */}
+          <div style={{
+            padding: '14px 16px',
+            background: theme.colors.primaryDim,
+            border: `1px solid ${theme.colors.primaryBorder}`,
+            borderRadius: theme.radius.md,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted, marginBottom: 2 }}>Total to lock from your wallet</div>
+              <div style={{ fontFamily: theme.fonts.mono, fontSize: 18, color: theme.colors.primary, fontWeight: 600, letterSpacing: '-0.02em' }}>
+                {totalLocked
+                  ? (Number(totalLocked) / 1e18).toFixed(4)
+                  : form.reward ? (parseFloat(form.reward) * 1.05).toFixed(4) : '—'
+                } MON
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, lineHeight: 1.6 }}>
+                reward + creator stake<br />
+                <span style={{ color: theme.colors.text.muted }}>stake returned on completion</span>
+              </div>
+            </div>
+          </div>
+
+          <p style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.faint, lineHeight: 1.6, textAlign: 'center' }}>
+            By posting, you authorize the smart contract to hold these funds. No central party can access them.
+          </p>
+        </div>
+      )}
+
+      {/* ── Navigation ────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 36, gap: 10 }}>
+        {step > 0 ? (
+          <Button variant="ghost" icon={<IconChevronLeft size={14} color="currentColor" />} onClick={handleBack}>Back</Button>
+        ) : (
+          <div />
+        )}
+
+        {step < STEPS.length - 1 ? (
+          <Button variant="primary" iconRight={<IconChevronRight size={14} color="currentColor" />} onClick={handleNext}>
+            Continue
+          </Button>
+        ) : (
+          <Button variant="primary" loading={loading} onClick={handleSubmit}>
+            Post & Lock Funds
+          </Button>
+        )}
       </div>
     </div>
   );

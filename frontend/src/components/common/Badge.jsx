@@ -1,52 +1,49 @@
-import React from 'react';
-import { theme as t } from '@/styles/theme.js';
+import { theme } from '../../styles/theme';
 
 const BADGE_MAP = {
-  active:    { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.16)' },
-  open:      { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.16)' },
-  approved:  { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.16)' },
-  you:       { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.16)' },
-  growth:    { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.16)' },
-  completed: { color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.16)' },
-  dev:       { color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.16)' },
-  development:{ color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.16)' },
-  reviewing: { color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.16)' },
-  pending:   { color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.16)' },
-  featured:  { color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.16)' },
-  expired:   { color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.14)' },
-  cancelled: { color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.14)' },
-  closed:    { color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.14)' },
-  disputed:  { color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.14)' },
-  design:    { color: '#60a5fa', bg: 'rgba(96,165,250,0.08)', border: 'rgba(96,165,250,0.14)' },
-  new:       { color: '#60a5fa', bg: 'rgba(96,165,250,0.08)', border: 'rgba(96,165,250,0.14)' },
-  content:   { color: '#fb923c', bg: 'rgba(251,146,60,0.08)', border: 'rgba(251,146,60,0.14)' },
-  research:  { color: '#34d399', bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.14)' },
-  security:  { color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.14)' },
-  other:     { color: t.colors.text.muted, bg: t.colors.bg.elevated, border: t.colors.border.default },
+  // Status
+  active:    { color: theme.colors.green[400],    bg: theme.colors.green.dim,    border: theme.colors.green.border    },
+  open:      { color: theme.colors.green[400],    bg: theme.colors.green.dim,    border: theme.colors.green.border    },
+  approved:  { color: theme.colors.green[400],    bg: theme.colors.green.dim,    border: theme.colors.green.border    },
+  completed: { color: theme.colors.lavender[400], bg: theme.colors.lavender.dim, border: theme.colors.lavender.border },
+  reviewing: { color: theme.colors.amber,         bg: theme.colors.amberDim,     border: theme.colors.amberBorder     },
+  pending:   { color: theme.colors.amber,         bg: theme.colors.amberDim,     border: theme.colors.amberBorder     },
+  featured:  { color: theme.colors.amber,         bg: theme.colors.amberDim,     border: theme.colors.amberBorder     },
+  expired:   { color: theme.colors.red[400],      bg: theme.colors.red.dim,      border: theme.colors.red.border      },
+  cancelled: { color: theme.colors.red[400],      bg: theme.colors.red.dim,      border: theme.colors.red.border      },
+  disputed:  { color: theme.colors.red[400],      bg: theme.colors.red.dim,      border: theme.colors.red.border      },
+  // Category
+  dev:       { color: theme.colors.primary,       bg: theme.colors.primaryDim,   border: theme.colors.primaryBorder   },
+  design:    { color: theme.colors.pink,           bg: theme.colors.pinkDim,      border: theme.colors.pinkBorder      },
+  content:   { color: theme.colors.amber,         bg: theme.colors.amberDim,     border: theme.colors.amberBorder     },
+  research:  { color: theme.colors.cyan,          bg: theme.colors.cyanDim,      border: theme.colors.cyanBorder      },
+  other:     { color: theme.colors.text.muted,    bg: theme.colors.bg.elevated,  border: theme.colors.border.default  },
 };
 
-const DEFAULT = { color: t.colors.text.muted, bg: t.colors.bg.elevated, border: t.colors.border.default };
+export default function Badge({ type = 'other', label, style: extraStyle = {} }) {
+  // Guard against BigInt, objects, etc. from ethers v6 contract data
+  const t = (type != null && typeof type !== 'object' && typeof type !== 'bigint')
+    ? String(type).toLowerCase()
+    : 'other';
+  const map = BADGE_MAP[t] || BADGE_MAP.other;
+  const display = label || (typeof type === 'string' ? type : t);
 
-export default function Badge({ type = 'other', label }) {
-  const s = BADGE_MAP[type?.toLowerCase()] || DEFAULT;
   return (
     <span style={{
-      display: 'inline-flex',
-      alignItems: 'center',
+      display: 'inline-flex', alignItems: 'center',
+      fontFamily: theme.fonts.mono,
+      fontSize: 9.5, fontWeight: 500,
+      letterSpacing: '0.05em', textTransform: 'uppercase',
+      color: map.color,
+      background: map.bg,
+      border: `1px solid ${map.border}`,
+      borderRadius: theme.radius.xs,
       padding: '2px 7px',
-      fontSize: '9.5px',
-      fontWeight: 600,
-      fontFamily: t.fonts.mono,
-      letterSpacing: '0.05em',
-      textTransform: 'uppercase',
-      color: s.color,
-      background: s.bg,
-      border: '1px solid ' + s.border,
-      borderRadius: '3px',
       whiteSpace: 'nowrap',
-      lineHeight: '16px',
+      lineHeight: 1.6,
+      ...extraStyle,
     }}>
-      {label}
+      {display}
     </span>
   );
 }

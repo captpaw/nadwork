@@ -1,10 +1,10 @@
 const API_KEY    = import.meta.env.VITE_PINATA_API_KEY        || '';
-const API_SECRET = import.meta.env.VITE_PINATA_SECRET_API_KEY  || '';
-const GATEWAY    = import.meta.env.VITE_PINATA_GATEWAY         || 'https://gateway.pinata.cloud/ipfs/';
+const API_SECRET = import.meta.env.VITE_PINATA_SECRET_API_KEY || '';
+const GATEWAY    = import.meta.env.VITE_PINATA_GATEWAY        || 'https://gateway.pinata.cloud/ipfs/';
 // VITE_PIN_PROXY_URL  — URL of the Cloudflare Worker proxy (e.g. https://nadwork.xyz/api/pin)
 // VITE_PIN_PROXY_TOKEN — X-Proxy-Token secret shared with the Worker
 const PROXY_URL   = import.meta.env.VITE_PIN_PROXY_URL   || '';
-const PROXY_TOKEN = import.meta.env.VITE_PIN_PROXY_TOKEN  || '';
+const PROXY_TOKEN = import.meta.env.VITE_PIN_PROXY_TOKEN || '';
 
 const GATEWAYS = [
   GATEWAY,
@@ -27,10 +27,21 @@ const jsonCache = new Map();
 export async function uploadJSON(data, name = 'nadwork-data') {
   const payload = JSON.stringify({ pinataMetadata: { name }, pinataContent: data });
 
+  const isProd = import.meta.env.PROD;
+  const isDev  = import.meta.env.DEV;
+
+  // In production we *require* the proxy and never talk to Pinata directly
+  if (isProd && !PROXY_URL) {
+    throw new Error('IPFS proxy is required in production. Set VITE_PIN_PROXY_URL and VITE_PIN_PROXY_TOKEN.');
+  }
+
   // ── Path 1: Cloudflare Worker proxy ──────────────────────────────────────
   if (PROXY_URL) {
+    if (!PROXY_TOKEN) {
+      throw new Error('IPFS proxy token is required. Set VITE_PIN_PROXY_TOKEN.');
+    }
     const headers = { 'Content-Type': 'application/json' };
-    if (PROXY_TOKEN) headers['X-Proxy-Token'] = PROXY_TOKEN;
+    headers['X-Proxy-Token'] = PROXY_TOKEN;
 
     const proxyRes = await fetch(PROXY_URL, {
       method: 'POST',
@@ -47,8 +58,13 @@ export async function uploadJSON(data, name = 'nadwork-data') {
   }
 
   // ── Path 2: Direct Pinata API (local dev only) ────────────────────────────
+  if (!isDev) {
+    // Should never happen in production because we already enforced PROXY_URL above.
+    throw new Error('Direct Pinata access is disabled outside local dev. Configure VITE_PIN_PROXY_URL.');
+  }
+
   if (!API_KEY || !API_SECRET) {
-    throw new Error('Pinata key invalid. Check VITE_PINATA_* in .env');
+    throw new Error('Pinata key invalid for local dev. Check VITE_PINATA_* in .env');
   }
 
   const res = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
@@ -106,6 +122,9 @@ export function buildBountyMeta({
     version: '2',
     title,
     shortDescription: shortDescription || fullDescription.slice(0, 160).replace(/\n/g, ' '),
+    // Store as both keys: fullDescription (canonical) and description (alias) for
+    // backward-compat with BountyDetailPage and any off-chain indexers reading meta.description
+    description: fullDescription,
     fullDescription,
     requirements,
     evaluationCriteria,
@@ -118,10 +137,72 @@ export function buildBountyMeta({
   };
 }
 
+// V4: Application proposal metadata — short proposal before full submission
+export function buildProposalMeta({
+  bountyId,
+  builderAddress,
+  proposal = '',
+}) {
+  return {
+    version: '1',
+    type: 'application_proposal',
+    bountyId: String(bountyId),
+    builderAddress,
+    proposal,
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+}
+
+// Opsi B: Revision request (creator → builder) — off-chain, stored on IPFS
+export function buildRevisionRequestMeta({
+  bountyId,
+  submissionId,
+  creatorAddress,
+  message,
+  refLink = '',
+}) {
+  return {
+    version: '1',
+    type: 'revision_request',
+    bountyId: String(bountyId),
+    submissionId: String(submissionId),
+    creatorAddress,
+    message,
+    refLink,
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+}
+
+// Opsi B: Revision response (builder → creator) — off-chain, stored on IPFS
+export function buildRevisionResponseMeta({
+  bountyId,
+  submissionId,
+  requestIpfs,
+  builderAddress,
+  title,
+  description = '',
+  deliverables = [],
+  notes = '',
+}) {
+  return {
+    version: '1',
+    type: 'revision_response',
+    bountyId: String(bountyId),
+    submissionId: String(submissionId),
+    requestIpfs,
+    builderAddress,
+    title,
+    description,
+    deliverables,
+    notes,
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+}
+
 // V2 submission metadata — description stored as Markdown, deliverables typed
 export function buildSubmissionMeta({
   bountyId,
-  hunterAddress,
+  builderAddress,
   title,
   description     = '',
   deliverables    = [],
@@ -131,7 +212,7 @@ export function buildSubmissionMeta({
   return {
     version: '2',
     bountyId: String(bountyId),
-    hunterAddress,
+    builderAddress,
     title,
     description,
     deliverables,

@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { theme as t } from '@/styles/theme.js';
+import { IconWarning } from '@/components/icons/index.jsx';
 import { useAvatar, getAvatarSrc } from '@/hooks/useAvatar.js';
 
 // ─── Initials fallback ────────────────────────────────────────────────────────
@@ -257,7 +258,7 @@ export function AvatarSection({ address }) {
           {/* Status messages */}
           {uploadError && (
             <div style={{ fontSize: '11.5px', color: '#f87171', marginBottom: '6px', lineHeight: 1.5 }}>
-              ⚠ {uploadError}
+              <IconWarning size={12} color="#f87171" style={{ marginRight: 4, verticalAlign: 'middle' }} /> {uploadError}
             </div>
           )}
           {src && !uploading && !uploadError && (

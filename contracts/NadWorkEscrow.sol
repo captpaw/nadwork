@@ -23,32 +23,32 @@ contract NadWorkEscrow {
 
     mapping(uint256 => EscrowRecord) private _records;
 
-    // V3 Fair System: submission stakes — bountyId => hunter => stake amount
+    // V3 Fair System: submission stakes — bountyId => builder => stake amount
     mapping(uint256 => mapping(address => uint256)) public submissionStakes;
-    // V3 Fair System: poster stakes — bountyId => stake amount (stored separately from reward)
-    mapping(uint256 => uint256) public posterStakes;
-    // V3 Fair System: held dispute stakes — bountyId => hunter => stake amount
-    // Stake moves here when hunter raises a dispute so it can be slashed if dispute is denied
+    // V3 Fair System: creator stakes — bountyId => stake amount (stored separately from reward)
+    mapping(uint256 => uint256) public creatorStakes;
+    // V3 Fair System: held dispute stakes — bountyId => builder => stake amount
+    // Stake moves here when builder raises a dispute so it can be slashed if dispute is denied
     mapping(uint256 => mapping(address => uint256)) public heldDisputeStakes;
 
     event Deposited(uint256 indexed bountyId, address depositor, address token, uint256 amount);
     event Released(uint256 indexed bountyId, address[] winners, uint256[] amounts, uint256 fee);
-    event ReleasedToAll(uint256 indexed bountyId, address[] hunters, uint256 eachAmount, uint256 fee);
-    event TimeoutClaimed(uint256 indexed bountyId, address[] hunters, uint256 eachAmount);
+    event ReleasedToAll(uint256 indexed bountyId, address[] builders, uint256 eachAmount, uint256 fee);
+    event TimeoutClaimed(uint256 indexed bountyId, address[] builders, uint256 eachAmount);
     event Refunded(uint256 indexed bountyId, address depositor, uint256 amount);
     event FeeSwept(address indexed to, uint256 amount);
     event TreasurySet(address indexed treasury);
     event FactorySet(address indexed factory);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     // V3 events
-    event SubmissionStakeDeposited(uint256 indexed bountyId, address indexed hunter, uint256 amount);
-    event SubmissionStakeRefunded(uint256 indexed bountyId, address indexed hunter, uint256 amount);
-    event SubmissionStakeSlashed(uint256 indexed bountyId, address indexed hunter, uint256 amount);
-    event DisputeStakeHeld(uint256 indexed bountyId, address indexed hunter, uint256 amount);
-    event DisputeStakeReleased(uint256 indexed bountyId, address indexed hunter, uint256 amount);
-    event PosterStakeDeposited(uint256 indexed bountyId, address indexed poster, uint256 amount);
-    event PosterStakeRefunded(uint256 indexed bountyId, address indexed poster, uint256 amount);
-    event PosterStakeSlashed(uint256 indexed bountyId, uint256 toHunters, uint256 toTreasury);
+    event SubmissionStakeDeposited(uint256 indexed bountyId, address indexed builder, uint256 amount);
+    event SubmissionStakeRefunded(uint256 indexed bountyId, address indexed builder, uint256 amount);
+    event SubmissionStakeSlashed(uint256 indexed bountyId, address indexed builder, uint256 amount);
+    event DisputeStakeHeld(uint256 indexed bountyId, address indexed builder, uint256 amount);
+    event DisputeStakeReleased(uint256 indexed bountyId, address indexed builder, uint256 amount);
+    event CreatorStakeDeposited(uint256 indexed bountyId, address indexed creator, uint256 amount);
+    event CreatorStakeRefunded(uint256 indexed bountyId, address indexed creator, uint256 amount);
+    event CreatorStakeSlashed(uint256 indexed bountyId, uint256 toBuilders, uint256 toTreasury);
 
     // FIX H-SC-4: Removed `|| msg.sender == owner` — owner cannot bypass factory logic
     modifier onlyFactory()   { require(msg.sender == factory, "Escrow: not factory"); _; }
@@ -112,8 +112,8 @@ contract NadWorkEscrow {
             released: false, refunded: false
         });
         if (stakeAmount > 0) {
-            posterStakes[bountyId] = stakeAmount;
-            emit PosterStakeDeposited(bountyId, depositor, stakeAmount);
+            creatorStakes[bountyId] = stakeAmount;
+            emit CreatorStakeDeposited(bountyId, depositor, stakeAmount);
         }
         emit Deposited(bountyId, depositor, address(0), rewardAmount);
     }
@@ -139,8 +139,8 @@ contract NadWorkEscrow {
             released: false, refunded: false
         });
         if (msg.value > 0) {
-            posterStakes[bountyId] = msg.value;
-            emit PosterStakeDeposited(bountyId, depositor, msg.value);
+            creatorStakes[bountyId] = msg.value;
+            emit CreatorStakeDeposited(bountyId, depositor, msg.value);
         }
         emit Deposited(bountyId, depositor, token, actualAmount);
     }
@@ -162,15 +162,15 @@ contract NadWorkEscrow {
         r.released = true;
         uint256 total      = r.amount;
         uint256 fee        = (total * FEE_BPS) / BPS_DENOM;
-        uint256 hunterPool = total - fee;
+        uint256 builderPool = total - fee;
         uint256[] memory amounts = new uint256[](winners.length);
         uint256 distributed = 0;
         for (uint256 i = 0; i < winners.length; i++) {
-            amounts[i] = (hunterPool * weights[i]) / 100;
+            amounts[i] = (builderPool * weights[i]) / 100;
             distributed += amounts[i];
         }
         // Give any integer-division dust to the last winner
-        uint256 dust = hunterPool - distributed;
+        uint256 dust = builderPool - distributed;
         if (dust > 0) amounts[winners.length - 1] += dust;
 
         _transfer(r.rewardToken, treasury, fee);
@@ -180,11 +180,11 @@ contract NadWorkEscrow {
         emit Released(bountyId, winners, amounts, fee);
     }
 
-    // Dispute resolution — release equally to all eligible hunters
-    function releaseToAll(uint256 bountyId, address[] calldata hunters)
+    // Dispute resolution — release equally to all eligible builders
+    function releaseToAll(uint256 bountyId, address[] calldata builders)
         external onlyFactory nonReentrant
     {
-        require(hunters.length > 0, "Escrow: no hunters");
+        require(builders.length > 0, "Escrow: no builders");
         EscrowRecord storage r = _records[bountyId];
         require(r.amount > 0,               "Escrow: not found");
         require(!r.released && !r.refunded, "Escrow: already settled");
@@ -192,25 +192,25 @@ contract NadWorkEscrow {
         r.released = true;
         uint256 total      = r.amount;
         uint256 fee        = (total * FEE_BPS) / BPS_DENOM;
-        uint256 hunterPool = total - fee;
-        uint256 eachAmount = hunterPool / hunters.length;
-        uint256 dust = hunterPool - (eachAmount * hunters.length);
+        uint256 builderPool = total - fee;
+        uint256 eachAmount = builderPool / builders.length;
+        uint256 dust = builderPool - (eachAmount * builders.length);
 
         _transfer(r.rewardToken, treasury, fee);
-        for (uint256 i = 0; i < hunters.length; i++) {
-            uint256 payout = (i == hunters.length - 1) ? eachAmount + dust : eachAmount;
-            if (payout > 0) _transfer(r.rewardToken, hunters[i], payout);
+        for (uint256 i = 0; i < builders.length; i++) {
+            uint256 payout = (i == builders.length - 1) ? eachAmount + dust : eachAmount;
+            if (payout > 0) _transfer(r.rewardToken, builders[i], payout);
         }
 
-        emit ReleasedToAll(bountyId, hunters, eachAmount, fee);
+        emit ReleasedToAll(bountyId, builders, eachAmount, fee);
     }
 
-    // Timeout: split equally among pending hunters (factory controls timing checks)
-    // Legacy push-payment version — kept for direct use if all hunters are EOAs
-    function claimTimeout(uint256 bountyId, address[] calldata hunters)
+    // Timeout: split equally among pending builders (factory controls timing checks)
+    // Legacy push-payment version — kept for direct use if all builders are EOAs
+    function claimTimeout(uint256 bountyId, address[] calldata builders)
         external onlyFactory nonReentrant
     {
-        require(hunters.length > 0, "Escrow: no hunters");
+        require(builders.length > 0, "Escrow: no builders");
         EscrowRecord storage r = _records[bountyId];
         require(r.amount > 0,               "Escrow: not found");
         require(!r.released && !r.refunded, "Escrow: already settled");
@@ -218,30 +218,30 @@ contract NadWorkEscrow {
         r.released = true;
         uint256 total      = r.amount;
         uint256 fee        = (total * FEE_BPS) / BPS_DENOM;
-        uint256 hunterPool = total - fee;
-        uint256 eachAmount = hunterPool / hunters.length;
-        uint256 dust = hunterPool - (eachAmount * hunters.length);
+        uint256 builderPool = total - fee;
+        uint256 eachAmount = builderPool / builders.length;
+        uint256 dust = builderPool - (eachAmount * builders.length);
 
         _transfer(r.rewardToken, treasury, fee);
-        for (uint256 i = 0; i < hunters.length; i++) {
-            uint256 payout = (i == hunters.length - 1) ? eachAmount + dust : eachAmount;
-            if (payout > 0) _transfer(r.rewardToken, hunters[i], payout);
+        for (uint256 i = 0; i < builders.length; i++) {
+            uint256 payout = (i == builders.length - 1) ? eachAmount + dust : eachAmount;
+            if (payout > 0) _transfer(r.rewardToken, builders[i], payout);
         }
 
-        emit TimeoutClaimed(bountyId, hunters, eachAmount);
+        emit TimeoutClaimed(bountyId, builders, eachAmount);
     }
 
     // FIX H-02: Pull-payment variant.
-    // Marks escrow as released, pays fee to treasury, then transfers the entire hunter
+    // Marks escrow as released, pays fee to treasury, then transfers the entire builder
     // pool to the factory (msg.sender = factory) so the factory can queue pending payouts.
-    // The factory is responsible for distributing to individual hunters via pendingTimeoutPayouts.
-    // Only works for NATIVE bounties — ERC20 timeout still uses push (hunters are less likely
+    // The factory is responsible for distributing to individual builders via pendingTimeoutPayouts.
+    // Only works for NATIVE bounties — ERC20 timeout still uses push (builders are less likely
     // to be malicious smart contracts for ERC20, and ERC20 transfer failures are non-reverting).
-    function claimTimeoutPullable(uint256 bountyId, address[] calldata hunters)
+    function claimTimeoutPullable(uint256 bountyId, address[] calldata builders)
         external onlyFactory nonReentrant
-        returns (uint256 perHunterAmount, uint256 hunterPool)
+        returns (uint256 perBuilderAmount, uint256 builderPool)
     {
-        require(hunters.length > 0, "Escrow: no hunters");
+        require(builders.length > 0, "Escrow: no builders");
         EscrowRecord storage r = _records[bountyId];
         require(r.amount > 0,               "Escrow: not found");
         require(!r.released && !r.refunded, "Escrow: already settled");
@@ -249,34 +249,34 @@ contract NadWorkEscrow {
         r.released = true;
         uint256 total = r.amount;
         uint256 fee   = (total * FEE_BPS) / BPS_DENOM;
-        hunterPool    = total - fee;
+        builderPool   = total - fee;
 
         if (r.rewardToken == address(0)) {
-            // Native: pay fee, then send entire hunter pool to factory for pull-payment
+            // Native: pay fee, then send entire builder pool to factory for pull-payment
             _safeTransferMON(treasury, fee);
-            _safeTransferMON(factory, hunterPool);
+            _safeTransferMON(factory, builderPool);
         } else {
             // ERC20: fall back to push-payment (safe for ERC20 since transfer failures aren't reentrancy DoS)
             bool ok = _transferERC20(r.rewardToken, treasury, fee);
             require(ok, "Escrow: ERC20 fee transfer failed");
-            uint256 each = hunterPool / hunters.length;
-            uint256 dust = hunterPool - each * hunters.length;
-            for (uint256 i = 0; i < hunters.length; i++) {
-                uint256 payout = (i == hunters.length - 1) ? each + dust : each;
+            uint256 each = builderPool / builders.length;
+            uint256 dust = builderPool - each * builders.length;
+            for (uint256 i = 0; i < builders.length; i++) {
+                uint256 payout = (i == builders.length - 1) ? each + dust : each;
                 if (payout > 0) {
-                    bool tokOk = _transferERC20(r.rewardToken, hunters[i], payout);
+                    bool tokOk = _transferERC20(r.rewardToken, builders[i], payout);
                     require(tokOk, "Escrow: ERC20 payout failed");
                 }
             }
-            hunterPool = 0; // signal to factory that ERC20 was handled directly
+            builderPool = 0; // signal to factory that ERC20 was handled directly
         }
 
-        perHunterAmount = hunterPool > 0 ? hunterPool / hunters.length : 0;
-        emit TimeoutClaimed(bountyId, hunters, perHunterAmount);
+        perBuilderAmount = builderPool > 0 ? builderPool / builders.length : 0;
+        emit TimeoutClaimed(bountyId, builders, perBuilderAmount);
     }
 
     // Full refund to depositor (cancel with no submissions, expire with no submissions)
-    // Also returns poster stake if any (caller must handle separately via refundPosterStake)
+    // Also returns creator stake if any (caller must handle separately via refundCreatorStake)
     function refund(uint256 bountyId) external onlyFactory nonReentrant {
         EscrowRecord storage r = _records[bountyId];
         require(r.amount > 0,               "Escrow: not found");
@@ -288,140 +288,140 @@ contract NadWorkEscrow {
 
     // ── V3: SUBMISSION STAKE MANAGEMENT ──────────────────────────────────────
 
-    // Called by factory when hunter submits work (msg.value = stake)
-    function depositSubmissionStake(uint256 bountyId, address hunter)
+    // Called by factory when builder submits work (msg.value = stake)
+    function depositSubmissionStake(uint256 bountyId, address builder)
         external payable onlyFactory nonReentrant
     {
         require(msg.value > 0, "Escrow: zero stake");
-        require(submissionStakes[bountyId][hunter] == 0, "Escrow: stake already exists");
-        submissionStakes[bountyId][hunter] = msg.value;
-        emit SubmissionStakeDeposited(bountyId, hunter, msg.value);
+        require(submissionStakes[bountyId][builder] == 0, "Escrow: stake already exists");
+        submissionStakes[bountyId][builder] = msg.value;
+        emit SubmissionStakeDeposited(bountyId, builder, msg.value);
     }
 
-    // Return submission stake to hunter (approve, cancel, or legitimate reject)
-    function refundSubmissionStake(uint256 bountyId, address hunter)
+    // Return submission stake to builder (approve, cancel, or legitimate reject)
+    function refundSubmissionStake(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
     {
-        uint256 amount = submissionStakes[bountyId][hunter];
+        uint256 amount = submissionStakes[bountyId][builder];
         require(amount > 0, "Escrow: no stake to refund");
-        submissionStakes[bountyId][hunter] = 0;
-        _safeTransferMON(hunter, amount);
-        emit SubmissionStakeRefunded(bountyId, hunter, amount);
+        submissionStakes[bountyId][builder] = 0;
+        _safeTransferMON(builder, amount);
+        emit SubmissionStakeRefunded(bountyId, builder, amount);
     }
 
-    // FIX XC-02+T-01: Pull-payment variant — transfer stake to factory instead of pushing to hunter.
-    // Factory queues the refund in pendingStakeRefunds so hunter can claim individually.
-    // Used in triggerTimeout/cancelBounty loops to prevent DoS by malicious hunter contracts.
+    // FIX XC-02+T-01: Pull-payment variant — transfer stake to factory instead of pushing to builder.
+    // Factory queues the refund in pendingStakeRefunds so builder can claim individually.
+    // Used in triggerTimeout/cancelBounty loops to prevent DoS by malicious builder contracts.
     // Returns the stake amount so factory can queue it.
-    function refundSubmissionStakeToFactory(uint256 bountyId, address hunter)
+    function refundSubmissionStakeToFactory(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
         returns (uint256 amount)
     {
-        amount = submissionStakes[bountyId][hunter];
+        amount = submissionStakes[bountyId][builder];
         if (amount == 0) return 0; // no-op if stake already returned
-        submissionStakes[bountyId][hunter] = 0;
+        submissionStakes[bountyId][builder] = 0;
         _safeTransferMON(factory, amount);
-        emit SubmissionStakeRefunded(bountyId, hunter, amount);
+        emit SubmissionStakeRefunded(bountyId, builder, amount);
     }
 
     // Slash submission stake to treasury (proven fraud/spam)
     // No-op if stake already refunded (e.g. during rejectSubmission before dispute)
-    function slashSubmissionStake(uint256 bountyId, address hunter)
+    function slashSubmissionStake(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
     {
-        uint256 amount = submissionStakes[bountyId][hunter];
+        uint256 amount = submissionStakes[bountyId][builder];
         if (amount == 0) return; // stake already returned or never existed
-        submissionStakes[bountyId][hunter] = 0;
+        submissionStakes[bountyId][builder] = 0;
         require(treasury != address(0), "Escrow: no treasury");
         _safeTransferMON(treasury, amount);
-        emit SubmissionStakeSlashed(bountyId, hunter, amount);
+        emit SubmissionStakeSlashed(bountyId, builder, amount);
     }
 
     // Move submission stake from submissionStakes → heldDisputeStakes (no ETH transfer).
-    // Called by Factory when hunter raises a dispute (stake was kept, not refunded after inGrace reject).
-    // No-op if submissionStakes is already 0 (e.g. stake was never collected for this hunter).
-    function moveStakeToHeld(uint256 bountyId, address hunter)
+    // Called by Factory when builder raises a dispute (stake was kept, not refunded after inGrace reject).
+    // No-op if submissionStakes is already 0 (e.g. stake was never collected for this builder).
+    function moveStakeToHeld(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
     {
-        uint256 amount = submissionStakes[bountyId][hunter];
+        uint256 amount = submissionStakes[bountyId][builder];
         if (amount == 0) return; // stake was already refunded or did not exist
-        require(heldDisputeStakes[bountyId][hunter] == 0, "Escrow: stake already held");
-        submissionStakes[bountyId][hunter] = 0;
-        heldDisputeStakes[bountyId][hunter] = amount;
-        emit DisputeStakeHeld(bountyId, hunter, amount);
+        require(heldDisputeStakes[bountyId][builder] == 0, "Escrow: stake already held");
+        submissionStakes[bountyId][builder] = 0;
+        heldDisputeStakes[bountyId][builder] = amount;
+        emit DisputeStakeHeld(bountyId, builder, amount);
     }
 
-    // Release held dispute stake back to hunter (dispute won by hunter)
-    function releaseDisputeStake(uint256 bountyId, address hunter)
+    // Release held dispute stake back to builder (dispute won by builder)
+    function releaseDisputeStake(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
     {
-        uint256 amount = heldDisputeStakes[bountyId][hunter];
+        uint256 amount = heldDisputeStakes[bountyId][builder];
         if (amount == 0) return;
-        heldDisputeStakes[bountyId][hunter] = 0;
-        _safeTransferMON(hunter, amount);
-        emit DisputeStakeReleased(bountyId, hunter, amount);
+        heldDisputeStakes[bountyId][builder] = 0;
+        _safeTransferMON(builder, amount);
+        emit DisputeStakeReleased(bountyId, builder, amount);
     }
 
-    // Slash held dispute stake to treasury (dispute denied — hunter raised bad-faith dispute)
+    // Slash held dispute stake to treasury (dispute denied — builder raised bad-faith dispute)
     // FIX NE-6: emit DisputeStakeSlashed (dedicated event) instead of SubmissionStakeSlashed
     // so on-chain indexers can differentiate dispute stake slashes from submission stake slashes
-    event DisputeStakeSlashed(uint256 indexed bountyId, address indexed hunter, uint256 amount);
+    event DisputeStakeSlashed(uint256 indexed bountyId, address indexed builder, uint256 amount);
 
-    function slashHeldDisputeStake(uint256 bountyId, address hunter)
+    function slashHeldDisputeStake(uint256 bountyId, address builder)
         external onlyFactory nonReentrant
     {
-        uint256 amount = heldDisputeStakes[bountyId][hunter];
+        uint256 amount = heldDisputeStakes[bountyId][builder];
         if (amount == 0) return;
-        heldDisputeStakes[bountyId][hunter] = 0;
+        heldDisputeStakes[bountyId][builder] = 0;
         require(treasury != address(0), "Escrow: no treasury");
         _safeTransferMON(treasury, amount);
-        emit DisputeStakeSlashed(bountyId, hunter, amount);
+        emit DisputeStakeSlashed(bountyId, builder, amount);
     }
 
-    // ── V3: POSTER STAKE MANAGEMENT ──────────────────────────────────────────
+    // ── V3: CREATOR STAKE MANAGEMENT ──────────────────────────────────────────
 
-    // Return poster stake fully (bounty completed, cancel before submissions, or dispute won by poster)
-    function refundPosterStake(uint256 bountyId, address poster)
+    // Return creator stake fully (bounty completed, cancel before submissions, or dispute won by creator)
+    function refundCreatorStake(uint256 bountyId, address creator)
         external onlyFactory nonReentrant
     {
-        uint256 amount = posterStakes[bountyId];
+        uint256 amount = creatorStakes[bountyId];
         if (amount == 0) return; // no-op if no stake (e.g. ERC20 bounty without stake)
-        posterStakes[bountyId] = 0;
-        _safeTransferMON(poster, amount);
-        emit PosterStakeRefunded(bountyId, poster, amount);
+        creatorStakes[bountyId] = 0;
+        _safeTransferMON(creator, amount);
+        emit CreatorStakeRefunded(bountyId, creator, amount);
     }
 
-    // Slash poster stake: split between hunters and treasury
-    // hunterAddresses: recipients for the hunters' share (may be empty)
-    // hunterShareBps: how many BPS of the stake go to hunters (0-10000)
-    function slashPosterStake(uint256 bountyId, address[] calldata hunterAddresses, uint256 hunterShareBps)
+    // Slash creator stake: split between builders and treasury
+    // builderAddresses: recipients for the builders' share (may be empty)
+    // builderShareBps: how many BPS of the stake go to builders (0-10000)
+    function slashCreatorStake(uint256 bountyId, address[] calldata builderAddresses, uint256 builderShareBps)
         external onlyFactory nonReentrant
     {
-        uint256 total = posterStakes[bountyId];
+        uint256 total = creatorStakes[bountyId];
         if (total == 0) return;
-        posterStakes[bountyId] = 0;
-        require(hunterShareBps <= 10_000, "Escrow: invalid bps");
+        creatorStakes[bountyId] = 0;
+        require(builderShareBps <= 10_000, "Escrow: invalid bps");
 
-        uint256 toHunters  = (total * hunterShareBps) / 10_000;
-        uint256 toTreasury = total - toHunters;
+        uint256 toBuilders  = (total * builderShareBps) / 10_000;
+        uint256 toTreasury = total - toBuilders;
 
-        if (toHunters > 0 && hunterAddresses.length > 0) {
-            uint256 each = toHunters / hunterAddresses.length;
-            uint256 dust = toHunters - each * hunterAddresses.length;
-            for (uint256 i = 0; i < hunterAddresses.length; i++) {
-                uint256 payout = (i == hunterAddresses.length - 1) ? each + dust : each;
-                if (payout > 0) _safeTransferMON(hunterAddresses[i], payout);
+        if (toBuilders > 0 && builderAddresses.length > 0) {
+            uint256 each = toBuilders / builderAddresses.length;
+            uint256 dust = toBuilders - each * builderAddresses.length;
+            for (uint256 i = 0; i < builderAddresses.length; i++) {
+                uint256 payout = (i == builderAddresses.length - 1) ? each + dust : each;
+                if (payout > 0) _safeTransferMON(builderAddresses[i], payout);
             }
-        } else if (toHunters > 0) {
-            // No hunter addresses — send everything to treasury
-            toTreasury += toHunters;
+        } else if (toBuilders > 0) {
+            // No builder addresses — send everything to treasury
+            toTreasury += toBuilders;
         }
 
         if (toTreasury > 0) {
             require(treasury != address(0), "Escrow: no treasury");
             _safeTransferMON(treasury, toTreasury);
         }
-        emit PosterStakeSlashed(bountyId, toHunters, toTreasury);
+        emit CreatorStakeSlashed(bountyId, toBuilders, toTreasury);
     }
 
     function getRecord(uint256 bountyId) external view returns (EscrowRecord memory) {

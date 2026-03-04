@@ -1,49 +1,42 @@
-import React from 'react';
-import { theme as t } from '@/styles/theme.js';
-import Button from './Button.jsx';
+import { theme } from '../../styles/theme';
+import Button from './Button';
 
-export default function EmptyState({ icon: Icon, title, message, action, onAction }) {
+export default function EmptyState({ icon, title, message, action, actionLabel }) {
   return (
     <div style={{
-      textAlign: 'center',
-      padding: 'clamp(40px, 8vw, 80px) 20px',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: '12px',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      textAlign: 'center', padding: '64px 24px', gap: 14,
     }}>
-      {Icon && (
+      {icon && (
         <div style={{
-          width: '44px',
-          height: '44px',
-          borderRadius: t.radius.lg,
-          background: t.colors.bg.elevated,
-          border: '1px solid ' + t.colors.border.default,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '4px',
+          color: theme.colors.text.faint,
+          marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <Icon size={20} color={t.colors.text.muted} />
+          {typeof icon === 'string' ? <span style={{ fontSize: 32 }}>{icon}</span> : icon}
         </div>
       )}
       <h3 style={{
-        fontSize: '14px',
-        fontWeight: 600,
-        color: t.colors.text.secondary,
+        fontFamily: theme.fonts.body, fontWeight: 600,
+        fontSize: 15, color: theme.colors.text.secondary,
         letterSpacing: '-0.02em',
-      }}>{title}</h3>
+      }}>
+        {title}
+      </h3>
       {message && (
         <p style={{
-          fontSize: '12.5px',
-          color: t.colors.text.muted,
-          maxWidth: '320px',
-          lineHeight: 1.65,
-        }}>{message}</p>
+          fontFamily: theme.fonts.body, fontWeight: 300,
+          fontSize: 13, color: theme.colors.text.muted,
+          maxWidth: 320, lineHeight: 1.7,
+        }}>
+          {message}
+        </p>
       )}
-      {action && onAction && (
-        <div style={{ marginTop: '8px' }}>
-          <Button size='sm' onClick={onAction}>{action}</Button>
+      {action && actionLabel && (
+        <div style={{ marginTop: 8 }}>
+          <Button variant="secondary" size="sm" onClick={action}>
+            {actionLabel}
+          </Button>
         </div>
       )}
     </div>

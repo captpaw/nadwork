@@ -1,902 +1,564 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { theme as t } from '@/styles/theme.js';
-import { useBounties } from '@/hooks/useBounties.js';
-import { useGlobalStats } from '@/hooks/useGlobalStats.js';
-import BountyFilter from '@/components/bounty/BountyFilter.jsx';
-import Button from '@/components/common/Button.jsx';
-import Badge from '@/components/common/Badge.jsx';
-import { PageLoader } from '@/components/common/Spinner.jsx';
-import DeadlineTimer from '@/components/bounty/DeadlineTimer.jsx';
-import { formatReward, categoryLabel } from '@/utils/format.js';
-import { fetchJSON } from '@/config/pinata.js';
-import { BOUNTY_STATUS, CATEGORY_LABELS } from '@/config/contracts.js';
-import {
-  IconPlus, IconSearch, IconChevronRight, IconArrowRight,
-  IconShield, IconMonad, IconCheck, IconTarget, IconUpload,
-} from '@/components/icons/index.jsx';
+import { useState, useEffect, useRef } from 'react';
+import { theme } from '../styles/theme';
+import { useGlobalStats } from '../hooks/useGlobalStats';
+import { Seal } from '../components/common/Logo';
+import { IconChevronRight, IconBounties, IconTarget, IconChart } from '../components/icons';
 
-// ── Animation variants ──────────────────────────────────────────────────────
-const fadeUp = (delay = 0) => ({
-  initial: { opacity: 0, y: 18 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.45, delay, ease: [0.16, 1, 0.3, 1] },
-});
-
-const fadeIn = (delay = 0) => ({
-  initial: { opacity: 0 },
-  animate: { opacity: 1 },
-  transition: { duration: 0.35, delay },
-});
-
-// ── BountyFeedItem: compact row in hero live-feed panel ─────────────────────
-function BountyFeedItem({ bounty, onClick }) {
-  const [meta, setMeta] = useState(null);
+// ── Animated counter ──────────────────────────────────────────────────────────
+function Counter({ to, duration = 1400, suffix = '' }) {
+  const [v, setV] = useState(0);
+  const done = useRef(false);
   useEffect(() => {
-    if (bounty.ipfsHash) fetchJSON(bounty.ipfsHash).then(setMeta).catch(() => {});
-  }, [bounty.ipfsHash]);
-
-  const title = meta?.title || bounty.title || '…';
-  const cat   = meta?.category || bounty.category || '';
-
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        width: '100%',
-        padding: '12px 16px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '5px',
-        cursor: 'pointer',
-        background: 'none',
-        border: 'none',
-        borderBottom: '1px solid ' + t.colors.border.faint,
-        textAlign: 'left',
-        transition: 'background 0.1s ease',
-      }}
-      onMouseEnter={e => e.currentTarget.style.background = t.colors.bg.elevated}
-      onMouseLeave={e => e.currentTarget.style.background = 'none'}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
-        <span style={{
-          fontSize: '12.5px',
-          fontWeight: 500,
-          color: t.colors.text.primary,
-          letterSpacing: '-0.01em',
-          lineHeight: 1.35,
-          flex: 1,
-          overflow: 'hidden',
-          display: '-webkit-box',
-          WebkitLineClamp: 1,
-          WebkitBoxOrient: 'vertical',
-        }}>{title}</span>
-        <span style={{
-          fontFamily: t.fonts.mono,
-          fontSize: '11.5px',
-          fontWeight: 700,
-          color: t.colors.violet[400],
-          flexShrink: 0,
-        }}>{formatReward(bounty.totalReward, bounty.rewardType)}</span>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-        {cat && (
-          <span style={{ fontSize: '10px', color: t.colors.text.muted, fontFamily: t.fonts.mono }}>
-            {CATEGORY_LABELS[cat] || categoryLabel(cat)}
-          </span>
-        )}
-        <span style={{ color: t.colors.border.strong, fontSize: '10px' }}>·</span>
-        <DeadlineTimer deadline={bounty.deadline} />
-      </div>
-    </button>
-  );
+    if (done.current || !to) return;
+    done.current = true;
+    const t0 = performance.now();
+    const frame = (now) => {
+      const p = Math.min((now - t0) / duration, 1);
+      const e = 1 - Math.pow(1 - p, 4);
+      setV(Math.round(e * to));
+      if (p < 1) requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }, [to, duration]);
+  return <>{v.toLocaleString()}{suffix}</>;
 }
 
-// ── BountyRow: table-style row for the bounty list ──────────────────────────
-function BountyRow({ bounty, onClick, index }) {
-  const [meta, setMeta] = useState(null);
-  const [hov,  setHov]  = useState(false);
-  useEffect(() => {
-    if (bounty.ipfsHash) fetchJSON(bounty.ipfsHash).then(setMeta).catch(() => {});
-  }, [bounty.ipfsHash]);
+// ── Orbital bounty board ──────────────────────────────────────────────────────
+const CAT_COLORS = {
+  dev:      { c: theme.colors.primary,       border: theme.colors.primaryBorder },
+  design:   { c: theme.colors.pink,          border: theme.colors.pinkBorder    },
+  content:  { c: theme.colors.amber,         border: theme.colors.amberBorder   },
+  research: { c: theme.colors.cyan,          border: theme.colors.cyanBorder    },
+  other:    { c: theme.colors.text.secondary, border: theme.colors.border.default },
+};
 
-  const title     = meta?.title    || bounty.title    || '—';
-  const cat       = meta?.category || bounty.category || '';
-  const statusNum = Number(bounty.status);
-  const statusKey = BOUNTY_STATUS[statusNum]?.toLowerCase() || 'active';
-  const isActive  = statusNum === 0;
+// BountyNode: wrapRef is at position:absolute left:0 top:0
+// RAF moves it with transform: translate(px,py) translate(-50%,-50%)
+// so the card center lands exactly on the orbit position
+function BountyNode({ bounty, size, wrapRef, onClick }) {
+  const [hov, setHov] = useState(false);
+  const cat      = CAT_COLORS[(bounty.category || 'other').toLowerCase()] || CAT_COLORS.other;
+  const w        = size === 'sm' ? 148 : 164;
+  const title    = bounty?.title    || 'Untitled';
+  const reward   = bounty?.reward   || bounty?.rewardAmount || '—';
+  const category = bounty?.category || 'Other';
 
   return (
-    <motion.div
-      {...fadeUp(index * 0.04)}
-      onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 108px 88px 90px',
-        alignItems: 'center',
-        padding: '0',
-        borderBottom: '1px solid ' + (hov ? t.colors.border.subtle : t.colors.border.faint),
-        cursor: 'pointer',
-        background: hov ? t.colors.bg.elevated : 'transparent',
-        borderRadius: hov ? t.radius.md : '0',
-        transition: 'background 0.12s ease, border-color 0.12s ease',
-        marginLeft: hov ? '-12px' : '0',
-        marginRight: hov ? '-12px' : '0',
-        paddingLeft: hov ? '12px' : '0',
-        paddingRight: hov ? '12px' : '0',
-      }}
+    <div
+      ref={wrapRef}
+      style={{ position: 'absolute', left: 0, top: 0, willChange: 'transform' }}
     >
-      {/* Title + meta */}
-      <div style={{ padding: '16px 16px 16px 0' }}>
-        <div style={{
-          fontSize: '13.5px',
-          fontWeight: 550,
-          color: t.colors.text.primary,
-          letterSpacing: '-0.018em',
-          lineHeight: 1.3,
-          marginBottom: '3px',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          maxWidth: '480px',
-        }}>{title}</div>
-        <div style={{
-          fontSize: '11px',
-          color: t.colors.text.muted,
-          fontFamily: t.fonts.mono,
-          display: 'flex',
-          gap: '6px',
-          alignItems: 'center',
-        }}>
-          <span>{String(bounty.poster).slice(0,6)}…{String(bounty.poster).slice(-4)}</span>
-          {cat && <><span style={{ color: t.colors.border.strong }}>·</span><span>{CATEGORY_LABELS[cat] || categoryLabel(cat)}</span></>}
-          <span style={{ color: t.colors.border.strong }}>·</span>
-          <span>{String(bounty.submissionCount)} sub{Number(bounty.submissionCount) !== 1 ? 's' : ''}</span>
-        </div>
-      </div>
-
-      {/* Reward */}
-      <div style={{ padding: '16px 8px' }}>
-        <span style={{
-          fontFamily: t.fonts.mono,
-          fontSize: '13px',
-          fontWeight: 700,
-          color: t.colors.violet[300],
-          letterSpacing: '-0.01em',
-        }}>{formatReward(bounty.totalReward, bounty.rewardType)}</span>
-      </div>
-
-      {/* Status */}
-      <div style={{ padding: '16px 8px' }}>
-        <Badge type={statusKey} label={statusKey.charAt(0).toUpperCase() + statusKey.slice(1)} />
-      </div>
-
-      {/* Deadline */}
-      <div style={{ padding: '16px 0 16px 8px' }}>
-        {isActive
-          ? <DeadlineTimer deadline={bounty.deadline} />
-          : <span style={{ fontSize: '11px', color: t.colors.text.muted, fontFamily: t.fonts.mono }}>—</span>
-        }
-      </div>
-    </motion.div>
-  );
-}
-
-// ── Steps data ──────────────────────────────────────────────────────────────
-const STEPS = [
-  { n: '01', Icon: IconTarget,  title: 'Post a Bounty',   desc: 'Lock MON or USDC in escrow. Define the task, deadline, and prize structure.' },
-  { n: '02', Icon: IconUpload,  title: 'Workers Submit',  desc: 'Anyone can submit work. Deliverables are stored permanently on IPFS.' },
-  { n: '03', Icon: IconSearch,  title: 'Review & Select', desc: 'Poster reviews submissions and picks winner(s) directly on-chain.' },
-  { n: '04', Icon: IconCheck,   title: 'Auto-Release',    desc: 'Smart contract releases funds to winners instantly. 3% platform fee.' },
-];
-
-// ── HomePage ─────────────────────────────────────────────────────────────────
-export default function HomePage() {
-  const [filters, setFilters] = useState({ category: 'all', status: 'all', sort: 'newest', search: '', page: 0 });
-  const [page, setPage] = useState(0);
-
-  const { bounties, hasMore, loading, total } = useBounties({ ...filters, page });
-  const { bountyCount, submissionCount }       = useGlobalStats();
-
-  const handleFilterChange = useCallback((next) => { setFilters(next); setPage(0); }, []);
-
-  const listTitle = filters.search
-    ? `Results for "${filters.search}"`
-    : filters.category !== 'all'
-      ? (CATEGORY_LABELS[filters.category] || filters.category) + ' Bounties'
-      : filters.status !== 'all'
-        ? filters.status.charAt(0).toUpperCase() + filters.status.slice(1) + ' Bounties'
-        : 'All Bounties';
-
-  return (
-    <div>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 1 — HERO (split: text left, live feed right)
-      ══════════════════════════════════════════════════════════════════════ */}
-      <section style={{
-        minHeight: '100vh',
-        position: 'relative',
-        overflow: 'hidden',
-        display: 'flex',
-        alignItems: 'center',
-      }}>
-
-        {/* Subtle radial glow — center-left */}
-        <div aria-hidden style={{
-          position: 'absolute',
-          top: '10%',
-          left: '-10%',
-          width: '60%',
-          height: '70%',
-          background: 'radial-gradient(ellipse at center, rgba(124,58,237,0.07) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }}/>
-
-        {/* Fine dot grid */}
-        <div aria-hidden style={{
-          position: 'absolute',
-          inset: 0,
-          backgroundImage: 'radial-gradient(circle, rgba(124,58,237,0.055) 1px, transparent 1px)',
-          backgroundSize: '32px 32px',
-          maskImage: 'radial-gradient(ellipse 80% 80% at 30% 40%, black 30%, transparent 100%)',
-          WebkitMaskImage: 'radial-gradient(ellipse 80% 80% at 30% 40%, black 30%, transparent 100%)',
-          pointerEvents: 'none',
-        }}/>
-
-        <div style={{
-          width: '100%',
-          maxWidth: '1160px',
-          margin: '0 auto',
-          padding: 'clamp(48px,8vh,80px) clamp(20px,5vw,48px)',
-          display: 'grid',
-          gridTemplateColumns: '1fr min(420px, 37%)',
-          gap: 'clamp(32px, 5vw, 64px)',
-          alignItems: 'center',
+      <div
+        onMouseEnter={() => setHov(true)}
+        onMouseLeave={() => setHov(false)}
+        onClick={onClick}
+        style={{
+          width: w,
+          background: hov ? theme.colors.bg.elevated : 'rgba(20,20,20,0.93)',
+          border: `1px solid ${hov ? cat.border : theme.colors.border.default}`,
+          borderRadius: theme.radius.xl,
+          padding: '12px 14px',
+          cursor: 'pointer',
+          zIndex: hov ? 30 : 5,
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          transition: 'border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.2s',
+          boxShadow: hov
+            ? `0 8px 32px rgba(0,0,0,0.7), 0 0 0 1px ${cat.border}, 0 0 18px ${cat.c}20`
+            : '0 2px 12px rgba(0,0,0,0.5)',
+          transform: hov ? 'scale(1.05)' : 'scale(1)',
           position: 'relative',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7 }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: cat.c, flexShrink: 0, boxShadow: `0 0 6px ${cat.c}88` }} />
+          <span style={{ fontFamily: theme.fonts.mono, fontSize: 10.5, color: cat.c, letterSpacing: '0.07em', textTransform: 'uppercase', fontWeight: 500 }}>{category}</span>
+        </div>
+        <div style={{
+          fontFamily: theme.fonts.body, fontSize: 13, fontWeight: 500,
+          color: hov ? theme.colors.text.primary : theme.colors.text.secondary,
+          letterSpacing: '-0.01em', lineHeight: 1.38, marginBottom: 9,
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          transition: 'color 0.2s',
+        }}>{title}</div>
+        <span style={{
+          fontFamily: theme.fonts.mono, fontSize: 13.5, fontWeight: 600,
+          color: hov ? cat.c : theme.colors.primary,
+          letterSpacing: '-0.01em', transition: 'color 0.2s',
+        }}>{reward} MON</span>
+      </div>
+    </div>
+  );
+}
+
+function OrbitalBoard({ bounties }) {
+  const rafRef   = useRef(null);
+  const lastRef  = useRef(null);
+  const angleRef = useRef(0);
+
+  // One ref per node — RAF writes transform directly to DOM, zero React re-renders
+  const innerRefs = [useRef(null), useRef(null), useRef(null)];
+  const outerRefs = [useRef(null), useRef(null), useRef(null)];
+  const lineRefs  = [useRef(null), useRef(null), useRef(null)];
+  const iDotRefs  = [useRef(null), useRef(null), useRef(null)];
+  const oDotRefs  = [useRef(null), useRef(null), useRef(null)];
+
+  const W = 560, H = 560, cx = W / 2, cy = H / 2;
+  const R1 = 142, R2 = 228;
+
+  const inner = bounties.slice(0, 3);
+  const outer = bounties.slice(3, 6);
+
+  useEffect(() => {
+    const toRad = d => d * Math.PI / 180;
+
+    const getXY = (r, baseAngle, i, total) => {
+      const deg = baseAngle + i * (360 / total);
+      return {
+        x: cx + r * Math.cos(toRad(deg)),
+        y: cy + r * Math.sin(toRad(deg)),
+      };
+    };
+
+    const animate = (now) => {
+      const dt = lastRef.current !== null ? now - lastRef.current : 0;
+      // clamp dt to avoid huge jump after tab switch
+      angleRef.current += Math.min(dt, 100) * 0.0042;
+      lastRef.current = now;
+
+      const a = angleRef.current;
+
+      inner.forEach((_, i) => {
+        const p = getXY(R1, a, i, inner.length);
+        // Node wrapper: position relative to container top-left
+        // translate so card CENTER lands on (p.x, p.y)
+        if (innerRefs[i].current) {
+          innerRefs[i].current.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
+        }
+        if (lineRefs[i].current) {
+          lineRefs[i].current.setAttribute('x2', p.x);
+          lineRefs[i].current.setAttribute('y2', p.y);
+        }
+        if (iDotRefs[i].current) {
+          iDotRefs[i].current.setAttribute('cx', p.x);
+          iDotRefs[i].current.setAttribute('cy', p.y);
+        }
+      });
+
+      outer.forEach((_, i) => {
+        const p = getXY(R2, -a * 0.58, i, outer.length);
+        if (outerRefs[i].current) {
+          outerRefs[i].current.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
+        }
+        if (oDotRefs[i].current) {
+          oDotRefs[i].current.setAttribute('cx', p.x);
+          oDotRefs[i].current.setAttribute('cy', p.y);
+        }
+      });
+
+      rafRef.current = requestAnimationFrame(animate);
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div
+      className="orbital-wrap"
+      style={{ position: 'relative', width: W, height: H }}
+    >
+      {/* ── Static SVG: rings + glow (never re-renders) ── */}
+      <svg width={W} height={H} style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'visible' }}>
+        <defs>
+          <radialGradient id="orb-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stopColor="#6E54FF" stopOpacity="0.4" />
+            <stop offset="55%"  stopColor="#6E54FF" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="#6E54FF" stopOpacity="0"   />
+          </radialGradient>
+          <linearGradient id="ring1-g" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%"   stopColor="#6E54FF" stopOpacity="0.6" />
+            <stop offset="50%"  stopColor="#85E6FF" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#6E54FF" stopOpacity="0.6" />
+          </linearGradient>
+          <linearGradient id="ring2-g" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%"   stopColor="#6E54FF" stopOpacity="0.28" />
+            <stop offset="50%"  stopColor="#85E6FF" stopOpacity="0.14" />
+            <stop offset="100%" stopColor="#6E54FF" stopOpacity="0.28" />
+          </linearGradient>
+          <filter id="f-blur" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="20" />
+          </filter>
+          <filter id="f-glow" x="-15%" y="-15%" width="130%" height="130%">
+            <feGaussianBlur stdDeviation="2" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+
+        {/* Ambient glow */}
+        <circle cx={cx} cy={cy} r={120} fill="url(#orb-glow)" filter="url(#f-blur)" />
+
+        {/* Rings — static, always visible */}
+        <circle cx={cx} cy={cy} r={R2} stroke="url(#ring2-g)" strokeWidth="1.5" fill="none" strokeDasharray="6 11" filter="url(#f-glow)" />
+        <circle cx={cx} cy={cy} r={R1} stroke="url(#ring1-g)" strokeWidth="1.5" fill="none" strokeDasharray="5 8"  filter="url(#f-glow)" />
+
+        {/* Connector lines — x2/y2 updated by RAF */}
+        {inner.map((_, i) => (
+          <line key={i} ref={lineRefs[i]}
+            x1={cx} y1={cy} x2={cx} y2={cy}
+            stroke="rgba(110,84,255,0.14)" strokeWidth="1" strokeDasharray="3 6"
+          />
+        ))}
+
+        {/* Inner orbit dots */}
+        {inner.map((_, i) => (
+          <circle key={i} ref={iDotRefs[i]} cx={cx} cy={cy} r="3.5"
+            fill="#6E54FF" opacity="0.7" filter="url(#f-glow)" />
+        ))}
+        {/* Outer orbit dots */}
+        {outer.map((_, i) => (
+          <circle key={i} ref={oDotRefs[i]} cx={cx} cy={cy} r="2.5"
+            fill="#85E6FF" opacity="0.55" filter="url(#f-glow)" />
+        ))}
+      </svg>
+
+      {/* ── Center hub — always at center, never moves ── */}
+      <div style={{
+        position: 'absolute',
+        left: '50%', top: '50%',
+        transform: 'translate(-50%, -50%)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+        zIndex: 10, pointerEvents: 'none',
+      }}>
+        <div style={{
+          width: 84, height: 84, borderRadius: '50%',
+          background: 'radial-gradient(circle at 38% 32%, #1e1a3c, #0f0f0f)',
+          border: '1.5px solid rgba(110,84,255,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 0 0 8px rgba(110,84,255,0.04), 0 0 0 18px rgba(110,84,255,0.015), 0 0 44px rgba(110,84,255,0.38)',
         }}>
+          <Seal size={40} color={theme.colors.primary} animated />
+        </div>
+        <span style={{
+          fontFamily: theme.fonts.mono, fontSize: 11,
+          color: theme.colors.primary, letterSpacing: '0.1em', textTransform: 'uppercase',
+          textShadow: '0 0 14px rgba(110,84,255,0.6)', opacity: 0.9,
+        }}>Contract</span>
+      </div>
 
-          {/* ── Left: editorial text ────────────────────────────────────── */}
-          <div>
+      {/* ── Bounty nodes — positioned at center, moved by RAF via ref ── */}
+      {inner.map((b, i) => (
+        <BountyNode
+          key={b.id || i} bounty={b} size="sm"
+          wrapRef={innerRefs[i]}
+          onClick={() => { if (b.id) window.location.hash = `#/bounty/${b.id}`; }}
+        />
+      ))}
+      {outer.map((b, i) => (
+        <BountyNode
+          key={b.id || i} bounty={b} size="md"
+          wrapRef={outerRefs[i]}
+          onClick={() => { if (b.id) window.location.hash = `#/bounty/${b.id}`; }}
+        />
+      ))}
+    </div>
+  );
+}
 
-            {/* Live pill */}
-            <motion.div {...fadeIn(0)} style={{ marginBottom: '36px' }}>
-              <span style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                border: '1px solid ' + t.colors.border.default,
-                borderRadius: t.radius.full,
-                padding: '4px 13px 4px 9px',
-                fontSize: '10px',
-                fontFamily: t.fonts.mono,
-                fontWeight: 500,
-                letterSpacing: '0.05em',
-                textTransform: 'uppercase',
-                color: t.colors.text.muted,
-              }}>
-                <span style={{
-                  width: '5px', height: '5px', borderRadius: '50%',
-                  background: t.colors.green[500], flexShrink: 0,
-                  animation: 'livePulse 2.5s ease-in-out infinite',
-                }}/>
-                Live on Monad Mainnet
-              </span>
-            </motion.div>
+// ── Main page ─────────────────────────────────────────────────────────────────
+export default function HomePage() {
+  const [mounted, setMounted] = useState(false);
+  const { bountyCount, submissionCount } = useGlobalStats();
 
-            {/* Massive headline — 3 lines, each animated */}
-            <div style={{ marginBottom: '28px' }}>
-              {['Work.', 'Win.', 'Earn.'].map((word, i) => (
-                <motion.div
-                  key={word}
-                  {...fadeUp(0.08 + i * 0.1)}
-                  style={{
-                    display: 'block',
-                    fontWeight: 900,
-                    fontSize: 'clamp(60px, 9vw, 108px)',
-                    lineHeight: 0.9,
-                    letterSpacing: t.tracking.display,
-                    color: i < 2 ? t.colors.text.primary : t.colors.violet[400],
-                    marginBottom: '4px',
-                  }}
-                >{word}</motion.div>
-              ))}
-            </div>
+  useEffect(() => { setTimeout(() => setMounted(true), 80); }, []);
 
-            {/* Subtitle */}
-            <motion.p
-              {...fadeIn(0.42)}
-              style={{
-                fontSize: 'clamp(13px, 1.6vw, 15px)',
-                color: t.colors.text.muted,
-                lineHeight: 1.75,
-                maxWidth: '400px',
-                marginBottom: '36px',
-                letterSpacing: '-0.005em',
-              }}
-            >
-              The on-chain bounty platform for Monad. Projects post tasks, workers deliver — funds auto-release via smart contract. No middleman.
-            </motion.p>
+  const orbitalBounties = [
+    { id: '1', title: 'Build Monad DEX router UI', reward: '4.0', category: 'dev' },
+    { id: '2', title: 'Smart contract audit report', reward: '2.5', category: 'research' },
+    { id: '3', title: 'Design NadWork marketing kit', reward: '1.8', category: 'design' },
+    { id: '4', title: 'Integrate Monad RPC dashboard', reward: '3.2', category: 'dev' },
+    { id: '5', title: 'Translate docs to Bahasa', reward: '0.6', category: 'content' },
+    { id: '6', title: 'Create onboarding video', reward: '1.2', category: 'content' },
+  ];
 
-            {/* Inline stats strip */}
-            <motion.div
-              {...fadeIn(0.5)}
-              style={{
-                display: 'flex',
-                width: 'fit-content',
-                border: '1px solid ' + t.colors.border.subtle,
-                borderRadius: t.radius.md,
-                overflow: 'hidden',
-                marginBottom: '32px',
-              }}
-            >
-              {[
-                { v: String(bountyCount ?? '—'), l: 'Bounties' },
-                { v: '3%',                       l: 'Fee' },
-                { v: 'MON',                      l: 'Rewards' },
-              ].map((s, i, arr) => (
-                <div key={s.l} style={{
-                  padding: '9px 18px',
-                  borderRight: i < arr.length - 1 ? '1px solid ' + t.colors.border.subtle : 'none',
-                  textAlign: 'center',
-                }}>
-                  <div style={{
-                    fontFamily: t.fonts.mono,
-                    fontSize: '17px',
-                    fontWeight: 700,
-                    color: t.colors.text.primary,
-                    letterSpacing: '-0.03em',
-                    lineHeight: 1,
-                    marginBottom: '2px',
-                  }}>{s.v}</div>
-                  <div style={{
-                    fontSize: '9px',
-                    color: t.colors.text.muted,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.07em',
-                    fontWeight: 500,
-                  }}>{s.l}</div>
-                </div>
-              ))}
-            </motion.div>
+  return (
+    <div style={{ background: theme.colors.bg.base, minHeight: '100vh' }}>
 
-            {/* CTA buttons */}
-            <motion.div {...fadeUp(0.56)} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
-              <Button
-                size="lg"
-                onClick={() => document.getElementById('bounty-list')?.scrollIntoView({ behavior: 'smooth' })}
-              >
-                Browse Bounties
-              </Button>
-              <Button
-                size="lg"
-                variant="secondary"
-                icon={<IconPlus size={13} />}
-                onClick={() => { window.location.hash = '#/post'; }}
-              >
-                Post a Bounty
-              </Button>
-            </motion.div>
+      {/* ── HERO ── */}
+      <section style={{
+        padding: 'clamp(52px,8vh,100px) clamp(20px,5vw,64px) 64px',
+        textAlign: 'center',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        position: 'relative', overflow: 'hidden',
+      }}>
+        {/* Background radial glow */}
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: `radial-gradient(ellipse 80% 55% at 50% 0%, ${theme.colors.primaryGlow} 0%, transparent 70%)`,
+          opacity: 0.18,
+        }} />
 
+        {/* Live pill */}
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          background: theme.colors.primaryDim,
+          border: `1px solid ${theme.colors.primaryBorder}`,
+          borderRadius: theme.radius.full,
+          padding: '6px 16px 6px 12px', marginBottom: 36,
+          opacity: mounted ? 1 : 0,
+          transform: mounted ? 'translateY(0)' : 'translateY(8px)',
+          transition: 'all 0.6s ease 0.1s',
+        }}>
+          <div style={{
+            width: 7, height: 7, borderRadius: '50%',
+            background: theme.colors.primary,
+            animation: 'livePulse 2s ease infinite',
+          }} />
+          <span style={{
+            fontFamily: theme.fonts.mono, fontSize: 12,
+            color: theme.colors.primary, letterSpacing: '0.06em', textTransform: 'uppercase',
+          }}>Live on Monad Testnet</span>
+        </div>
+
+        {/* Headline */}
+        <div style={{
+          marginBottom: 28,
+          opacity: mounted ? 1 : 0,
+          transform: mounted ? 'translateY(0)' : 'translateY(18px)',
+          transition: 'all 0.7s ease 0.2s',
+        }}>
+          <div style={{
+            fontFamily: theme.fonts.body, fontWeight: 800,
+            fontSize: 'clamp(56px,9vw,104px)',
+            letterSpacing: '-0.05em', lineHeight: 0.92,
+            color: theme.colors.text.primary,
+          }}>Post work.</div>
+          <div style={{
+            fontFamily: theme.fonts.body, fontWeight: 800,
+            fontSize: 'clamp(56px,9vw,104px)',
+            letterSpacing: '-0.05em', lineHeight: 0.92,
+            background: `linear-gradient(135deg, ${theme.colors.primary} 0%, ${theme.colors.cyan} 100%)`,
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+          }}>Get paid.</div>
+          {/* Line 3 — strikethrough treatment, visible on dark bg */}
+          <div style={{
+            fontFamily: theme.fonts.body, fontWeight: 800,
+            fontSize: 'clamp(56px,9vw,104px)',
+            letterSpacing: '-0.05em', lineHeight: 0.92,
+            display: 'flex', alignItems: 'baseline', gap: '0.2em',
+            justifyContent: 'center', flexWrap: 'wrap',
+          }}>
+            <span style={{ color: theme.colors.text.muted }}>No</span>
+            <span style={{
+              color: theme.colors.text.muted,
+              textDecoration: 'line-through',
+              textDecorationColor: theme.colors.primary,
+              textDecorationThickness: 4,
+            }}>trust</span>
+            <span style={{ color: theme.colors.text.muted }}>required.</span>
           </div>
+        </div>
 
-          {/* ── Right: live bounty feed panel ───────────────────────────── */}
-          <motion.div
-            initial={{ opacity: 0, x: 24, y: 8 }}
-            animate={{ opacity: 1, x: 0, y: 0 }}
-            transition={{ duration: 0.55, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="hide-mobile"
-            style={{
-              background: t.colors.bg.panel,
-              border: '1px solid ' + t.colors.border.subtle,
-              borderRadius: t.radius.xl,
-              overflow: 'hidden',
-              boxShadow: t.shadow.violetMd,
+        {/* Subtext */}
+        <p style={{
+          fontFamily: theme.fonts.body, fontWeight: 300,
+          fontSize: 16, color: theme.colors.text.secondary, lineHeight: 1.8,
+          maxWidth: 480, marginBottom: 36,
+          opacity: mounted ? 1 : 0,
+          transform: mounted ? 'translateY(0)' : 'translateY(10px)',
+          transition: 'all 0.7s ease 0.32s',
+        }}>
+          Smart contracts hold the funds. You deliver the work.<br />
+          The contract releases payment — automatically, on Monad.
+        </p>
+
+        {/* CTAs */}
+        <div style={{
+          display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'center',
+          flexWrap: 'wrap', marginBottom: 48,
+          opacity: mounted ? 1 : 0,
+          transform: mounted ? 'translateY(0)' : 'translateY(8px)',
+          transition: 'all 0.7s ease 0.4s',
+        }}>
+          <a href="#/bounties" style={{
+            padding: '13px 32px',
+            background: theme.colors.primary, color: '#fff',
+            border: 'none', borderRadius: theme.radius.lg, fontSize: 15,
+            fontFamily: theme.fonts.body, fontWeight: 700,
+            letterSpacing: '-0.01em', cursor: 'pointer',
+            boxShadow: `0 4px 28px ${theme.colors.primaryGlow}`,
+            textDecoration: 'none', display: 'inline-block',
+          }}>Browse Bounties <IconChevronRight size={16} color="#fff" style={{ marginLeft: 6, verticalAlign: 'middle' }} /></a>
+          <a href="#/post" style={{
+            padding: '13px 28px',
+            background: 'transparent', color: theme.colors.text.secondary,
+            border: `1px solid ${theme.colors.border.strong}`, borderRadius: theme.radius.lg,
+            fontSize: 15, fontFamily: theme.fonts.body, fontWeight: 500,
+            letterSpacing: '-0.01em', cursor: 'pointer', textDecoration: 'none',
+            display: 'inline-block',
+          }}>+ Post a Bounty</a>
+        </div>
+
+        {/* Stats bar */}
+        <div style={{
+          display: 'flex', gap: 0,
+          border: `1px solid ${theme.colors.border.default}`,
+          borderRadius: theme.radius.xl, overflow: 'hidden',
+          background: theme.colors.bg.card,
+          opacity: mounted ? 1 : 0, transition: 'opacity 0.8s ease 0.5s',
+        }}>
+          {[
+            { to: bountyCount    || 0, suffix: '',  label: 'Total Bounties'  },
+            { to: submissionCount|| 0, suffix: '',  label: 'Submissions'     },
+            { to: 3,                   suffix: '%', label: 'Platform Fee'    },
+          ].map(({ to, suffix, label }, i, arr) => (
+            <div key={label} style={{
+              padding: '18px clamp(20px,3vw,36px)',
+              borderRight: i < arr.length - 1 ? `1px solid ${theme.colors.border.default}` : 'none',
+              textAlign: 'center', minWidth: 90,
+            }}>
+              <div style={{
+                fontFamily: theme.fonts.mono, fontSize: 22,
+                fontWeight: 500, color: theme.colors.text.primary,
+                letterSpacing: '-0.03em', lineHeight: 1, marginBottom: 6,
+              }}>
+                {mounted ? <Counter to={to} suffix={suffix} /> : '0'}
+              </div>
+              <div style={{
+                fontFamily: theme.fonts.body, fontSize: 12,
+                color: theme.colors.text.muted, letterSpacing: '0.01em',
+              }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── ORBITAL BOARD ── */}
+      <section style={{
+        padding: '0 clamp(20px,5vw,64px) 56px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 16, marginBottom: 36,
+          opacity: mounted ? 1 : 0, transition: 'opacity 0.8s ease 0.6s',
+        }}>
+          <div style={{ height: 1, width: 60, background: theme.colors.border.default }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: '50%',
+              background: theme.colors.primary,
+              animation: 'livePulse 2s ease infinite',
+            }} />
+            <span style={{
+              fontFamily: theme.fonts.mono, fontSize: 12,
+              color: theme.colors.text.muted, letterSpacing: '0.08em', textTransform: 'uppercase',
+            }}>Live bounties · orbiting the contract</span>
+          </div>
+          <div style={{ height: 1, width: 60, background: theme.colors.border.default }} />
+        </div>
+
+        <OrbitalBoard bounties={orbitalBounties} />
+
+        {/* Browse CTA below orbital */}
+        <div style={{
+          marginTop: 36,
+          opacity: mounted ? 1 : 0, transition: 'opacity 0.9s ease 0.8s',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+        }}>
+          <a href="#/bounties" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '12px 32px',
+            background: 'transparent',
+            border: `1px solid ${theme.colors.border.strong}`,
+            borderRadius: theme.radius.lg, fontSize: 14,
+            fontFamily: theme.fonts.body, fontWeight: 600,
+            color: theme.colors.text.primary,
+            letterSpacing: '-0.01em', cursor: 'pointer', textDecoration: 'none',
+            transition: 'all 0.2s ease',
+          }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = theme.colors.primaryDim;
+              e.currentTarget.style.borderColor = theme.colors.primary;
+              e.currentTarget.style.color = theme.colors.primary;
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.borderColor = theme.colors.border.strong;
+              e.currentTarget.style.color = theme.colors.text.primary;
             }}
           >
-            {/* Panel header */}
-            <div style={{
-              padding: '11px 16px',
-              borderBottom: '1px solid ' + t.colors.border.faint,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                <span style={{
-                  width: '5px', height: '5px', borderRadius: '50%',
-                  background: t.colors.green[500],
-                  animation: 'livePulse 2.5s ease-in-out infinite',
-                }}/>
-                <span style={{
-                  fontSize: '9.5px',
-                  fontFamily: t.fonts.mono,
-                  fontWeight: 600,
-                  color: t.colors.text.muted,
-                  letterSpacing: '0.09em',
-                  textTransform: 'uppercase',
-                }}>Live Bounties</span>
-              </div>
-              {total > 0 && (
-                <span style={{ fontSize: '10px', fontFamily: t.fonts.mono, color: t.colors.text.muted }}>
-                  {total} total
-                </span>
-              )}
-            </div>
-
-            {/* Feed rows */}
-            {loading && bounties.length === 0 ? (
-              [...Array(3)].map((_, i) => (
-                <div key={i} style={{ padding: '14px 16px', borderBottom: '1px solid ' + t.colors.border.faint }}>
-                  <div className="skeleton" style={{ height: '12px', borderRadius: '3px', width: '75%', marginBottom: '8px' }}/>
-                  <div className="skeleton" style={{ height: '9px',  borderRadius: '3px', width: '45%' }}/>
-                </div>
-              ))
-            ) : bounties.length === 0 ? (
-              <div style={{ padding: '28px 16px', textAlign: 'center', color: t.colors.text.muted, fontSize: '12px' }}>
-                No bounties yet — be the first.
-              </div>
-            ) : (
-              bounties.slice(0, 4).map(b => (
-                <BountyFeedItem
-                  key={String(b.id)}
-                  bounty={b}
-                  onClick={() => { window.location.hash = '#/bounty/' + String(b.id); }}
-                />
-              ))
-            )}
-
-            {/* Panel footer */}
-            <button
-              onClick={() => document.getElementById('bounty-list')?.scrollIntoView({ behavior: 'smooth' })}
-              style={{
-                width: '100%',
-                padding: '11px 16px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                background: 'transparent',
-                cursor: 'pointer',
-                color: t.colors.violet[400],
-                fontSize: '11.5px',
-                fontWeight: 500,
-                letterSpacing: '-0.005em',
-                transition: 'background 0.1s ease',
-                border: 'none',
-                borderTop: '1px solid ' + t.colors.border.faint,
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = t.colors.bg.elevated}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <span>View all bounties</span>
-              <IconChevronRight size={14} color={t.colors.violet[400]} />
-            </button>
-          </motion.div>
-
+            <span>Browse All Bounties</span>
+            <IconChevronRight size={16} color="currentColor" />
+          </a>
+          <span style={{
+            fontFamily: theme.fonts.mono, fontSize: 11,
+            color: theme.colors.text.faint, letterSpacing: '0.05em',
+          }}>filter · search · sort</span>
         </div>
       </section>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 2 — BOUNTY LIST (table format)
-      ══════════════════════════════════════════════════════════════════════ */}
-      <section id="bounty-list" style={{
-        padding: 'clamp(3rem, 7vw, 5.5rem) 0',
-        borderTop: '1px solid ' + t.colors.border.subtle,
-      }}>
-        <div className="container">
-
-          {/* Header */}
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            flexWrap: 'wrap',
-            gap: '16px',
-            marginBottom: '20px',
-          }}>
-            <div>
-              <h2 style={{
-                fontWeight: 800,
-                fontSize: 'clamp(18px, 3vw, 26px)',
-                letterSpacing: t.tracking.tight,
-                color: t.colors.text.primary,
-                lineHeight: 1.1,
-                marginBottom: '3px',
-              }}>{listTitle}</h2>
-              {!loading && total > 0 && (
-                <span style={{ fontSize: '11px', color: t.colors.text.muted, fontFamily: t.fonts.mono }}>
-                  {bounties.length}{total > bounties.length ? ' / ' + total : ''} bounties
-                </span>
-              )}
-            </div>
-            <Button size="sm" variant="secondary" icon={<IconPlus size={12} />}
-              onClick={() => { window.location.hash = '#/post'; }}>
-              Post Bounty
-            </Button>
-          </div>
-
-          {/* Filter */}
-          <BountyFilter filters={filters} onChange={handleFilterChange} />
-
-          {/* Table */}
-          <div style={{ marginTop: '28px' }}>
-            {loading && bounties.length === 0 ? (
-              <div>
-                {/* Skeleton header */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 108px 88px 90px',
-                  paddingBottom: '10px',
-                  borderBottom: '1px solid ' + t.colors.border.default,
-                  marginBottom: '4px',
-                }}>
-                  {['Title', 'Reward', 'Status', 'Deadline'].map(h => (
-                    <div key={h} style={{
-                      fontSize: '9.5px', fontFamily: t.fonts.mono,
-                      fontWeight: 500, letterSpacing: '0.08em',
-                      textTransform: 'uppercase', color: t.colors.text.muted,
-                    }}>{h}</div>
-                  ))}
-                </div>
-                {[...Array(6)].map((_, i) => (
-                  <div key={i} style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 108px 88px 90px',
-                    padding: '16px 0',
-                    borderBottom: '1px solid ' + t.colors.border.faint,
-                    gap: '16px',
-                    alignItems: 'center',
-                  }}>
-                    <div>
-                      <div className="skeleton" style={{ height: '13px', borderRadius: '3px', width: '65%', marginBottom: '7px' }}/>
-                      <div className="skeleton" style={{ height: '9px',  borderRadius: '3px', width: '38%' }}/>
-                    </div>
-                    <div className="skeleton" style={{ height: '12px', borderRadius: '3px', width: '60px' }}/>
-                    <div className="skeleton" style={{ height: '18px', borderRadius: '3px', width: '54px' }}/>
-                    <div className="skeleton" style={{ height: '11px', borderRadius: '3px', width: '50px' }}/>
-                  </div>
-                ))}
-              </div>
-            ) : bounties.length === 0 ? (
-              <div style={{
-                padding: '64px 0',
-                textAlign: 'center',
-                color: t.colors.text.muted,
-              }}>
-                <div style={{ fontSize: '28px', marginBottom: '12px', opacity: 0.3 }}>○</div>
-                <p style={{ fontSize: '13px', marginBottom: '16px' }}>
-                  {filters.search || filters.category !== 'all' || filters.status !== 'all'
-                    ? 'No bounties match these filters'
-                    : 'No bounties yet'}
-                </p>
-                <Button size="sm" onClick={() => { window.location.hash = '#/post'; }}>
-                  Post the first bounty
-                </Button>
-              </div>
-            ) : (
-              <>
-                {/* Table header */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 108px 88px 90px',
-                  paddingBottom: '10px',
-                  borderBottom: '1px solid ' + t.colors.border.default,
-                  marginBottom: '4px',
-                }}>
-                  {['Title', 'Reward', 'Status', 'Deadline'].map(h => (
-                    <div key={h} style={{
-                      fontSize: '9.5px', fontFamily: t.fonts.mono,
-                      fontWeight: 500, letterSpacing: '0.08em',
-                      textTransform: 'uppercase', color: t.colors.text.muted,
-                    }}>{h}</div>
-                  ))}
-                </div>
-
-                {/* Rows */}
-                {bounties.map((b, i) => (
-                  <BountyRow
-                    key={String(b.id)}
-                    bounty={b}
-                    index={i}
-                    onClick={() => { window.location.hash = '#/bounty/' + String(b.id); }}
-                  />
-                ))}
-
-                {hasMore && (
-                  <div style={{ textAlign: 'center', marginTop: '32px' }}>
-                    <Button variant="secondary" loading={loading} onClick={() => setPage(p => p + 1)}>
-                      Load more
-                    </Button>
-                    <div style={{ fontSize: '10.5px', color: t.colors.text.muted, marginTop: '8px', fontFamily: t.fonts.mono }}>
-                      {bounties.length} of {total}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-        </div>
-      </section>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 3 — HOW IT WORKS (horizontal numbered timeline)
-      ══════════════════════════════════════════════════════════════════════ */}
+      {/* ── HOW IT WORKS ── */}
       <section style={{
-        padding: 'clamp(3.5rem, 8vw, 6rem) 0',
-        borderTop: '1px solid ' + t.colors.border.subtle,
-        background: t.colors.bg.panel,
-        position: 'relative',
-        overflow: 'hidden',
+        borderTop: `1px solid ${theme.colors.border.subtle}`,
+        padding: '72px clamp(20px,5vw,64px) 96px',
       }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 48 }}>
+            <div style={{ height: 1, flex: 1, background: theme.colors.border.default }} />
+            <span style={{
+              fontFamily: theme.fonts.mono, fontSize: 12,
+              color: theme.colors.text.muted, letterSpacing: '0.1em', textTransform: 'uppercase',
+            }}>How it works</span>
+            <div style={{ height: 1, flex: 1, background: theme.colors.border.default }} />
+          </div>
 
-        {/* Background accent */}
-        <div aria-hidden style={{
-          position: 'absolute',
-          bottom: 0, right: 0,
-          width: '40%',
-          height: '100%',
-          background: 'radial-gradient(ellipse at bottom right, rgba(124,58,237,0.05) 0%, transparent 60%)',
-          pointerEvents: 'none',
-        }}/>
-
-        <div className="container" style={{ position: 'relative' }}>
-
-          {/* Section label + title */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: '-60px' }}
-            transition={{ duration: 0.35 }}
-            style={{ marginBottom: 'clamp(2.5rem, 5vw, 4rem)' }}
-          >
-            <div style={{
-              fontSize: '9px',
-              fontFamily: t.fonts.mono,
-              fontWeight: 600,
-              color: t.colors.violet[600],
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              marginBottom: '12px',
-            }}>How it works</div>
-            <h2 style={{
-              fontWeight: 800,
-              fontSize: 'clamp(22px, 3.5vw, 34px)',
-              letterSpacing: t.tracking.tight,
-              color: t.colors.text.primary,
-              lineHeight: 1.1,
-              maxWidth: '480px',
-            }}>
-              From task to payout —{' '}
-              <span style={{ color: t.colors.text.muted, fontWeight: 400 }}>fully on-chain</span>
-            </h2>
-          </motion.div>
-
-          {/* Steps grid */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '0',
-            position: 'relative',
-          }}>
-
-            {/* Horizontal connecting line */}
-            <div aria-hidden style={{
-              position: 'absolute',
-              top: '19px',
-              left: '36px',
-              right: '36px',
-              height: '1px',
-              background: 'linear-gradient(90deg, transparent, ' + t.colors.border.default + ' 15%, ' + t.colors.border.default + ' 85%, transparent)',
-              zIndex: 0,
-            }}/>
-
-            {STEPS.map((step, i) => (
-              <motion.div
-                key={step.n}
-                initial={{ opacity: 0, y: 16 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: '-40px' }}
-                transition={{ delay: i * 0.1, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                style={{
-                  position: 'relative',
-                  zIndex: 1,
-                  paddingRight: 'clamp(8px, 2.5vw, 32px)',
-                }}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap: 2 }}>
+            {[
+              { n: '01', Icon: IconBounties, color: theme.colors.primary, title: 'Post a Bounty',   desc: 'Describe the task and set a MON reward. Funds lock instantly into the smart contract.' },
+              { n: '02', Icon: IconTarget,   color: theme.colors.cyan,    title: 'Builders Deliver', desc: 'Anyone can find your bounty and submit work. Review and pick the best submission.' },
+              { n: '03', Icon: IconChart,    color: theme.colors.primary, title: 'Contract Pays',   desc: 'Approve a winner and the contract releases funds directly to their wallet. Automatic.' },
+            ].map((item, i, arr) => (
+              <div key={item.n} style={{
+                padding: '32px 28px',
+                background: theme.colors.bg.card,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: i === 0 ? '14px 0 0 14px' : i === arr.length - 1 ? '0 14px 14px 0' : '0',
+                position: 'relative',
+                transition: theme.transition,
+              }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primaryBorder; e.currentTarget.style.background = theme.colors.bg.elevated; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
               >
-                {/* Circle number */}
                 <div style={{
-                  width: '38px',
-                  height: '38px',
-                  borderRadius: '50%',
-                  background: t.colors.bg.elevated,
-                  border: '1px solid ' + t.colors.border.strong,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontFamily: t.fonts.mono,
-                  fontSize: '10.5px',
-                  fontWeight: 700,
-                  color: t.colors.violet[400],
-                  letterSpacing: '0.02em',
-                  marginBottom: '22px',
-                }}>
-                  {step.n}
-                </div>
-
-                {/* Icon */}
+                  fontFamily: theme.fonts.mono, fontSize: 12,
+                  color: theme.colors.text.muted, marginBottom: 20, letterSpacing: '0.04em',
+                }}>{item.n}</div>
                 <div style={{
-                  width: '36px',
-                  height: '36px',
-                  borderRadius: t.radius.md,
-                  background: 'rgba(124,58,237,0.07)',
-                  border: '1px solid rgba(124,58,237,0.14)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: '14px',
-                }}>
-                  <step.Icon size={16} color={t.colors.violet[400]} />
-                </div>
-
+                  color: item.color, marginBottom: 16,
+                  textShadow: `0 0 20px ${item.color}55`, display: 'flex', alignItems: 'center',
+                }}><item.Icon size={28} color={item.color} /></div>
                 <h3 style={{
-                  fontWeight: 650,
-                  fontSize: '14px',
-                  color: t.colors.text.primary,
-                  letterSpacing: '-0.02em',
-                  marginBottom: '8px',
-                }}>{step.title}</h3>
+                  fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 17,
+                  color: theme.colors.text.primary, letterSpacing: '-0.02em', marginBottom: 10,
+                }}>{item.title}</h3>
                 <p style={{
-                  fontSize: '12.5px',
-                  color: t.colors.text.muted,
-                  lineHeight: 1.7,
-                  maxWidth: '200px',
-                }}>{step.desc}</p>
-              </motion.div>
+                  fontFamily: theme.fonts.body, fontWeight: 300, fontSize: 14,
+                  color: theme.colors.text.secondary, lineHeight: 1.75,
+                }}>{item.desc}</p>
+                {i < arr.length - 1 && (
+                  <div style={{
+                    position: 'absolute', top: '50%', right: -14, transform: 'translateY(-50%)',
+                    zIndex: 2, width: 28, height: 28, borderRadius: '50%',
+                    background: theme.colors.bg.base, border: `1px solid ${theme.colors.border.default}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}><IconChevronRight size={12} color={theme.colors.text.muted} /></div>
+                )}
+              </div>
             ))}
           </div>
-
         </div>
       </section>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-          SECTION 4 — CTA (solid violet — biggest visual contrast)
-      ══════════════════════════════════════════════════════════════════════ */}
-      <section style={{
-        background: t.colors.violet[600],
-        padding: 'clamp(4rem, 9vw, 7rem) 0',
-        position: 'relative',
-        overflow: 'hidden',
-      }}>
-
-        {/* Noise texture overlay (subtle) */}
-        <div aria-hidden style={{
-          position: 'absolute',
-          inset: 0,
-          backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px)',
-          backgroundSize: '24px 24px',
-          pointerEvents: 'none',
-        }}/>
-
-        {/* Glow top */}
-        <div aria-hidden style={{
-          position: 'absolute',
-          top: '-40%',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '60%',
-          height: '100%',
-          background: 'radial-gradient(ellipse at center, rgba(255,255,255,0.08) 0%, transparent 60%)',
-          pointerEvents: 'none',
-        }}/>
-
-        <div className="container" style={{ textAlign: 'center', position: 'relative' }}>
-
-          <motion.h2
-            initial={{ opacity: 0, y: 14 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.4 }}
-            style={{
-              fontWeight: 900,
-              fontSize: 'clamp(28px, 6vw, 52px)',
-              letterSpacing: t.tracking.display,
-              color: '#ffffff',
-              lineHeight: 0.95,
-              marginBottom: '16px',
-            }}
-          >
-            Start earning<br />
-            <span style={{ opacity: 0.75 }}>today.</span>
-          </motion.h2>
-
-          <motion.p
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.35, delay: 0.1 }}
-            style={{
-              fontSize: 'clamp(13px, 1.8vw, 15px)',
-              color: 'rgba(255,255,255,0.58)',
-              marginBottom: '40px',
-              lineHeight: 1.65,
-              maxWidth: '360px',
-              margin: '0 auto 40px',
-            }}
-          >
-            The on-chain bounty platform for Monad. No middleman. No trust required.
-          </motion.p>
-
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.35, delay: 0.16 }}
-            style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}
-          >
-            {/* White filled button */}
-            <button
-              onClick={() => document.getElementById('bounty-list')?.scrollIntoView({ behavior: 'smooth' })}
-              style={{
-                height: '44px',
-                padding: '0 28px',
-                borderRadius: t.radius.md,
-                background: '#ffffff',
-                color: t.colors.violet[700],
-                fontWeight: 700,
-                fontSize: '13.5px',
-                letterSpacing: '-0.015em',
-                cursor: 'pointer',
-                border: 'none',
-                transition: 'opacity 0.1s ease, transform 0.08s ease',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontFamily: t.fonts.body,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.92'; }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
-              onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)'; }}
-              onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}
-            >
-              Browse Bounties
-            </button>
-
-            {/* Ghost white button */}
-            <button
-              onClick={() => { window.location.hash = '#/post'; }}
-              style={{
-                height: '44px',
-                padding: '0 28px',
-                borderRadius: t.radius.md,
-                background: 'rgba(255,255,255,0.1)',
-                color: '#ffffff',
-                fontWeight: 600,
-                fontSize: '13.5px',
-                letterSpacing: '-0.015em',
-                cursor: 'pointer',
-                border: '1px solid rgba(255,255,255,0.22)',
-                transition: 'background 0.12s ease, transform 0.08s ease',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontFamily: t.fonts.body,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.16)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
-              onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)'; }}
-              onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}
-            >
-              <IconPlus size={13} color="white" />
-              Post a Bounty
-            </button>
-          </motion.div>
-
-        </div>
-      </section>
-
     </div>
   );
 }

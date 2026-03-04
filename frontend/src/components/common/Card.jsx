@@ -1,55 +1,46 @@
-import React, { useState } from 'react';
-import { theme as t } from '@/styles/theme.js';
+import { useState } from 'react';
+import { theme } from '../../styles/theme';
+
+const VARIANTS = {
+  default:  { bg: theme.colors.bg.card,    border: theme.colors.border.subtle  },
+  elevated: { bg: theme.colors.bg.elevated, border: theme.colors.border.default },
+  surface:  { bg: theme.colors.bg.surface,  border: theme.colors.primaryBorder  },
+  outline:  { bg: 'transparent',            border: theme.colors.border.default },
+};
+
+const PADDING = { sm: '12px', md: '20px', lg: '28px' };
 
 export default function Card({
   children,
   variant = 'default',
+  padding = 'md',
   hoverable = false,
   onClick,
-  padding,
-  style,
-  className,
+  style: extraStyle = {},
+  className = '',
+  ...props
 }) {
   const [hov, setHov] = useState(false);
-
-  const variants = {
-    default: {
-      background: t.colors.bg.card,
-      border: '1px solid ' + (hov && hoverable ? t.colors.border.strong : t.colors.border.subtle),
-      boxShadow: hov && hoverable ? t.shadow.md : 'none',
-    },
-    elevated: {
-      background: t.colors.bg.elevated,
-      border: '1px solid ' + (hov && hoverable ? t.colors.border.strong : t.colors.border.default),
-      boxShadow: hov && hoverable ? t.shadow.md : 'none',
-    },
-    surface: {
-      background: t.colors.bg.surface,
-      border: '1px solid rgba(124,58,237,0.14)',
-      boxShadow: 'none',
-    },
-    outline: {
-      background: 'transparent',
-      border: '1px solid ' + (hov && hoverable ? t.colors.border.strong : t.colors.border.default),
-    },
-  };
-
-  const v = variants[variant] || variants.default;
+  const v = VARIANTS[variant] || VARIANTS.default;
+  const isClickable = hoverable || !!onClick;
 
   return (
     <div
       onClick={onClick}
-      onMouseEnter={() => hoverable && setHov(true)}
-      onMouseLeave={() => hoverable && setHov(false)}
+      onMouseEnter={() => isClickable && setHov(true)}
+      onMouseLeave={() => isClickable && setHov(false)}
       className={className}
       style={{
-        ...v,
-        borderRadius: t.radius.lg,
-        padding: padding ?? '20px',
-        transition: 'border-color 0.14s ease, box-shadow 0.14s ease, background 0.14s ease',
-        cursor: onClick ? 'pointer' : 'default',
-        ...style,
+        background: v.bg,
+        border: `1px solid ${hov && isClickable ? theme.colors.border.strong : v.border}`,
+        borderRadius: theme.radius.lg,
+        padding: typeof padding === 'string' && PADDING[padding] ? PADDING[padding] : padding,
+        cursor: isClickable ? 'pointer' : 'default',
+        transition: theme.transition,
+        boxShadow: hov && isClickable ? theme.shadow.md : 'none',
+        ...extraStyle,
       }}
+      {...props}
     >
       {children}
     </div>

@@ -1,370 +1,125 @@
-import React, { useState } from 'react';
-import { motion } from 'framer-motion';
-import { theme as t } from '@/styles/theme.js';
-import { useLeaderboard } from '@/hooks/useLeaderboard.js';
-import Card from '@/components/common/Card.jsx';
-import { formatMON } from '@/utils/format.js';
-import { useDisplayName } from '@/hooks/useIdentity.js';
-import { AvatarDisplay } from '@/components/common/Avatar.jsx';
-import { IconMedal, IconTarget, IconDashboard, IconTrophy } from '@/components/icons/index.jsx';
+import { theme } from '../styles/theme';
+import { PageLoader } from '../components/common/Spinner';
+import EmptyState from '../components/common/EmptyState';
+import { IconWarning, IconTarget } from '../components/icons';
+import { useLeaderboard } from '../hooks/useLeaderboard';
 
-const PODIUM_COLORS = [t.colors.violet[400], t.colors.slate[400], '#a07850'];
+// Format Wei BigInt → MON string
+function formatMon(wei) {
+  if (!wei && wei !== 0n) return '0';
+  try { return (Number(BigInt(wei)) / 1e18).toFixed(4).replace(/\.?0+$/, '') || '0'; }
+  catch { return '0'; }
+}
 
 function RankBadge({ rank }) {
-  if (rank <= 3) return <IconMedal rank={rank} size={20} />;
+  // Silver and bronze from theme amber/cyan to stay consistent
+  const medals = {
+    1: { color: theme.colors.amber,      label: '①' },
+    2: { color: theme.colors.text.muted, label: '②' },
+    3: { color: theme.colors.cyan,       label: '③' },
+  };
+  const m = medals[rank];
   return (
     <span style={{
-      fontFamily: t.fonts.mono,
-      fontSize: '11px',
-      fontWeight: 600,
-      color: t.colors.text.muted,
-      minWidth: '22px',
-      textAlign: 'right',
+      fontFamily: theme.fonts.mono, fontSize: rank <= 3 ? 14 : 11,
+      color: m ? m.color : theme.colors.text.muted,
+      fontWeight: rank <= 3 ? 700 : 400,
+      minWidth: 24, display: 'inline-block', textAlign: 'center',
     }}>
-      #{rank}
+      {m ? m.label : rank}
     </span>
   );
 }
 
-function SkeletonRow() {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', borderBottom: '1px solid ' + t.colors.border.subtle }}>
-      <div className="skeleton" style={{ width: '22px', height: '12px', borderRadius: t.radius.xs }} />
-      <div className="skeleton" style={{ width: '28px', height: '28px', borderRadius: t.radius.sm }} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '5px' }}>
-        <div className="skeleton" style={{ width: '110px', height: '11px', borderRadius: t.radius.xs }} />
-        <div className="skeleton" style={{ width: '70px', height: '9px', borderRadius: t.radius.xs }} />
-      </div>
-      <div className="skeleton" style={{ width: '44px', height: '16px', borderRadius: t.radius.xs }} />
-    </div>
-  );
-}
-
-function PodiumCard({ rank, data, type }) {
-  // FIX I-FE-2: Rules of Hooks — hooks must be called unconditionally before any early return
-  const { displayName } = useDisplayName(data?.address);
-  if (!data) return null;
-  const color = PODIUM_COLORS[rank - 1];
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: rank * 0.08 }}
-      style={{
-        flex: rank === 1 ? '1.15' : '1',
-        padding: '18px 14px',
-        textAlign: 'center',
-        background: rank === 1 ? 'rgba(124,58,237,0.07)' : t.colors.bg.card,
-        border: '1px solid ' + (rank === 1 ? 'rgba(124,58,237,0.22)' : t.colors.border.default),
-        borderRadius: t.radius.xl,
-        order: rank === 1 ? 0 : rank === 2 ? -1 : 1,
-        marginTop: rank === 1 ? '0' : '20px',
-      }}
-    >
-      {/* Medal */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
-        <IconMedal rank={rank} size={28} />
-      </div>
-
-      {/* Avatar */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
-        <AvatarDisplay address={data.address} size={36} />
-      </div>
-
-      <a
-        href={'#/profile/' + data.address}
-        style={{
-          fontFamily: t.fonts.mono,
-          fontSize: '12.5px',
-          fontWeight: 600,
-          color,
-          textDecoration: 'none',
-          display: 'block',
-          marginBottom: '6px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {displayName}
-      </a>
-
-      <div style={{
-        fontFamily: t.fonts.mono,
-        fontSize: '20px',
-        fontWeight: 700,
-        color: t.colors.text.primary,
-        letterSpacing: '-0.04em',
-      }}>
-        {data.score}
-      </div>
-      <div style={{
-        fontSize: '9.5px',
-        color: t.colors.text.muted,
-        marginTop: '2px',
-        letterSpacing: '0.08em',
-        textTransform: 'uppercase',
-      }}>
-        Score
-      </div>
-
-      {type === 'hunter' && (
-        <div style={{ marginTop: '8px', fontSize: '10.5px', color: t.colors.text.muted }}>
-          {data.winCount} wins · {data.winRate}% win rate
-        </div>
-      )}
-      {type === 'project' && (
-        <div style={{ marginTop: '8px', fontSize: '10.5px', color: t.colors.text.muted }}>
-          {data.completed}/{data.posted} completed
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-function TableRow({ rank, data, type }) {
-  const [hov, setHov] = useState(false);
-  const { displayName } = useDisplayName(data.address);
-
-  return (
-    <div
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px',
-        padding: '11px 14px',
-        borderBottom: '1px solid ' + t.colors.border.subtle,
-        transition: 'background 0.12s ease',
-        background: hov ? t.colors.bg.elevated : 'transparent',
-        cursor: 'pointer',
-      }}
-      onClick={() => window.location.hash = '#/profile/' + data.address}
-    >
-      <div style={{ minWidth: '26px', display: 'flex', justifyContent: 'flex-end' }}>
-        <RankBadge rank={rank} />
-      </div>
-      <AvatarDisplay address={data.address} size={28} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontFamily: t.fonts.mono,
-          fontSize: '12px',
-          fontWeight: 500,
-          color: t.colors.text.primary,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}>
-          {displayName}
-        </div>
-        {type === 'hunter' && (
-          <div style={{ fontSize: '10.5px', color: t.colors.text.muted, marginTop: '2px' }}>
-            {data.winCount} wins · {data.winCount + data.subCount > 0 ? Math.round(data.winRate) + '% win rate' : ''}
-          </div>
-        )}
-        {type === 'project' && (
-          <div style={{ fontSize: '10.5px', color: t.colors.text.muted, marginTop: '2px' }}>
-            {data.completed} completed · {data.posted} posted
-          </div>
-        )}
-      </div>
-      <div style={{ textAlign: 'right', flexShrink: 0 }}>
-        <div style={{
-          fontFamily: t.fonts.mono,
-          fontSize: '13px',
-          fontWeight: 700,
-          color: t.colors.text.primary,
-        }}>
-          {data.score}
-        </div>
-        <div style={{ fontSize: '9.5px', color: t.colors.text.muted, marginTop: '1px' }}>pts</div>
-      </div>
-      {type === 'hunter' && data.totalEarned > 0n && (
-        <div style={{ textAlign: 'right', minWidth: '75px', flexShrink: 0 }}>
-          <div style={{ fontFamily: t.fonts.mono, fontSize: '11.5px', color: t.colors.violet[300] }}>
-            {formatMON(data.totalEarned)}
-          </div>
-          <div style={{ fontSize: '9.5px', color: t.colors.text.muted }}>earned</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function LeaderboardPage() {
-  const { hunters, projects, loading, error } = useLeaderboard();
-  const [tab, setTab] = useState('hunters');
-
-  const data = tab === 'hunters' ? hunters : projects;
-  const top3 = data.slice(0, 3);
-  const rest = data.slice(3);
+  const { builders = [], loading, error } = useLeaderboard();
 
   return (
-    <div>
-      <div className="container" style={{ padding: 'clamp(1.5rem, 4vw, 3rem) clamp(1rem, 4vw, 2rem)' }}>
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-        >
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: 'clamp(32px,5vw,64px) clamp(16px,4vw,48px)' }}>
+      {/* Header */}
+      <div style={{ marginBottom: 40 }}>
+        <div className="page-eyebrow">NadWork · Leaderboard</div>
+        <h1 className="page-title">Top Builders</h1>
+        <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, marginTop: 8 }}>
+          Ranked by total MON earned across all completed bounties.
+        </p>
+      </div>
 
-          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-            <h1 style={{
-              fontWeight: 700,
-              fontSize: 'clamp(22px, 4vw, 32px)',
-              color: t.colors.text.primary,
-              letterSpacing: '-0.035em',
-              marginBottom: '8px',
-            }}>
-              Leaderboard
-            </h1>
-            <p style={{ fontSize: '13.5px', color: t.colors.text.muted, maxWidth: '400px', margin: '0 auto' }}>
-              Top hunters and projects ranked by on-chain reputation score.
-            </p>
-          </div>
-
-          {/* Tabs */}
-          <div style={{
-            display: 'flex',
-            gap: '3px',
-            marginBottom: '2rem',
-            background: t.colors.bg.card,
-            padding: '3px',
-            borderRadius: t.radius.md,
-            border: '1px solid ' + t.colors.border.default,
-            maxWidth: '260px',
-            margin: '0 auto 2rem',
+      {loading ? <PageLoader /> : error ? (
+        <EmptyState icon={<IconWarning size={32} color={theme.colors.amber} />} title="Failed to load" message="Could not fetch leaderboard." />
+      ) : builders.length === 0 ? (
+        <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No builders yet" message="Complete a bounty to appear on the leaderboard." />
+      ) : (
+        <div style={{ border: `1px solid ${theme.colors.border.subtle}`, borderRadius: theme.radius.lg, overflow: 'hidden' }}>
+          {/* Table header */}
+          <div className="lb-grid" style={{
+            padding: '10px 20px',
+            borderBottom: `1px solid ${theme.colors.border.default}`,
+            background: theme.colors.bg.panel,
           }}>
-            {[
-              { v: 'hunters',  l: 'Hunters',  Icon: IconTarget    },
-              { v: 'projects', l: 'Projects', Icon: IconDashboard },
-            ].map(tp => (
-              <button
-                key={tp.v}
-                onClick={() => setTab(tp.v)}
-                style={{
-                  flex: 1,
-                  padding: '7px 12px',
-                  borderRadius: '6px',
-                  background: tab === tp.v ? 'rgba(124,58,237,0.12)' : 'transparent',
-                  border: '1px solid ' + (tab === tp.v ? 'rgba(124,58,237,0.25)' : 'transparent'),
-                  color: tab === tp.v ? t.colors.violet[300] : t.colors.text.muted,
-                  fontSize: '12.5px',
-                  fontWeight: tab === tp.v ? 600 : 400,
-                  cursor: 'pointer',
-                  transition: 'background 0.12s ease, color 0.12s ease',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '5px',
-                }}
-              >
-                <tp.Icon size={13} />
-                {tp.l}
-              </button>
+            {['#', 'Builder', 'Earned', 'Wins'].map((h, hi) => (
+              <span key={h} className={hi === 3 ? 'lb-wins' : ''} style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</span>
             ))}
           </div>
 
-          {error && (
-            <div style={{ padding: '20px', textAlign: 'center', color: t.colors.text.muted, fontSize: '13.5px' }}>
-              Failed to load leaderboard: {error}
-            </div>
-          )}
+          {builders.map((builder, i) => {
+            const rank   = i + 1;
+            const isTop  = rank <= 3;
+            const wins   = builder.winCount ?? 0;
+            const earned = formatMon(builder.totalEarned);
+            const topBg  = `${theme.colors.primaryDim}`;
+            return (
+              <div
+                key={builder.address}
+                onClick={() => { window.location.hash = `#/profile/${builder.address}`; }}
+                className="lb-grid"
+                style={{
+                  padding: '14px 20px', alignItems: 'center',
+                  borderBottom: i < builders.length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none',
+                  background: isTop ? topBg : 'transparent',
+                  cursor: 'pointer', transition: theme.transition,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = theme.colors.bg.elevated; }}
+                onMouseLeave={e => { e.currentTarget.style.background = isTop ? topBg : 'transparent'; }}
+              >
+                <RankBadge rank={rank} />
 
-          {/* Podium — top 3 */}
-          {!loading && data.length > 0 && (
-            <div style={{
-              display: 'flex',
-              gap: '10px',
-              marginBottom: '24px',
-              alignItems: 'flex-end',
-              justifyContent: 'center',
-              maxWidth: '640px',
-              margin: '0 auto 24px',
-            }}>
-              {[top3[1], top3[0], top3[2]].filter(Boolean).map((d) => {
-                const rank = d === top3[0] ? 1 : d === top3[1] ? 2 : 3;
-                return (
-                  <PodiumCard
-                    key={d.address}
-                    rank={rank}
-                    data={d}
-                    type={tab === 'hunters' ? 'hunter' : 'project'}
-                  />
-                );
-              })}
-            </div>
-          )}
-
-          {/* Table — ranks 4–20 */}
-          <div style={{ maxWidth: '640px', margin: '0 auto' }}>
-            <Card style={{ padding: 0, overflow: 'hidden' }}>
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
-              ) : rest.length === 0 && data.length === 0 ? (
-                <div style={{
-                  padding: '48px 24px',
-                  textAlign: 'center',
-                  color: t.colors.text.muted,
-                  fontSize: '13.5px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '12px',
-                }}>
-                  <IconTrophy size={32} color={t.colors.text.faint} />
-                  No data yet. Complete bounties to appear here!
-                </div>
-              ) : (
-                rest.map((d, i) => (
-                  <TableRow
-                    key={d.address}
-                    rank={i + 4}
-                    data={d}
-                    type={tab === 'hunters' ? 'hunter' : 'project'}
-                  />
-                ))
-              )}
-            </Card>
-
-            {/* Scoring legend */}
-            <Card style={{ marginTop: '16px' }}>
-              <div style={{
-                fontSize: '10.5px',
-                color: t.colors.text.muted,
-                letterSpacing: '0.08em',
-                textTransform: 'uppercase',
-                marginBottom: '12px',
-                fontWeight: 600,
-              }}>
-                How scores are calculated
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px' }}>
-                {(tab === 'hunters'
-                  ? [
-                      { label: 'Win a bounty',   pts: '+30 pts' },
-                      { label: 'Submit work',     pts: '+5 pts'  },
-                      { label: 'Earn 0.001 MON', pts: '+1 pt'   },
-                    ]
-                  : [
-                      { label: 'Post a bounty',     pts: '+10 pts' },
-                      { label: 'Complete a bounty', pts: '+20 pts' },
-                      { label: 'Pay out 0.001 MON', pts: '+1 pt'   },
-                    ]
-                ).map(({ label, pts }) => (
-                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px' }}>
-                    <span style={{ color: t.colors.text.secondary }}>{label}</span>
-                    <span style={{ fontFamily: t.fonts.mono, color: t.colors.violet[400], fontWeight: 600 }}>{pts}</span>
+                {/* Builder */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%',
+                    background: `hsl(${parseInt(builder.address.slice(2, 6), 16) % 360},50%,20%)`,
+                    border: `1px solid ${theme.colors.border.default}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.secondary,
+                    flexShrink: 0,
+                  }}>
+                    {builder.address.slice(2, 4).toUpperCase()}
                   </div>
-                ))}
-              </div>
-            </Card>
-          </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: theme.fonts.body, fontWeight: 500, fontSize: 13, color: theme.colors.text.primary, letterSpacing: '-0.01em' }}>
+                      {`${builder.address.slice(0, 6)}…${builder.address.slice(-4)}`}
+                    </div>
+                    <div style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint }}>
+                      {builder.address.slice(0, 10)}…
+                    </div>
+                  </div>
+                </div>
 
-        </motion.div>
-      </div>
+                {/* Earned */}
+                <span style={{ fontFamily: theme.fonts.mono, fontSize: 13, fontWeight: 500, color: theme.colors.primary }}>
+                  {earned} MON
+                </span>
+
+                {/* Wins */}
+                <span className="lb-wins" style={{ fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.secondary }}>
+                  {wins}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

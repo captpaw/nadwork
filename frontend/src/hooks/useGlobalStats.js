@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getReadContract } from '@/utils/ethers.js';
+import { getReadContractWithFallback, invalidateContractCache } from '@/utils/ethers.js';
 import { ADDRESSES, REGISTRY_ABI } from '@/config/contracts.js';
 
 export function useGlobalStats() {
@@ -14,13 +14,13 @@ export function useGlobalStats() {
       if (!ADDRESSES.registry || loadingRef.current) return;
       loadingRef.current = true;
       try {
-        const reg = getReadContract(ADDRESSES.registry, REGISTRY_ABI);
+        const reg = await getReadContractWithFallback(ADDRESSES.registry, REGISTRY_ABI);
         const [bc, sc] = await Promise.all([reg.bountyCount(), reg.submissionCount()]);
         if (mountedRef.current) {
           setStats({ bountyCount: Number(bc), submissionCount: Number(sc) });
         }
-      } catch {
-        // silently ignore — stats are non-critical
+      } catch (e) {
+        if (e?.message?.includes('429')) invalidateContractCache(ADDRESSES.registry);
       } finally {
         loadingRef.current = false;
       }
@@ -28,7 +28,7 @@ export function useGlobalStats() {
 
     load();
     // Sequential interval: only fires after previous call resolves (loadingRef guard)
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 60_000);
     return () => { mountedRef.current = false; clearInterval(id); };
   }, []);
 

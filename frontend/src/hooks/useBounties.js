@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getReadContract } from '@/utils/ethers.js';
+import { getReadContractWithFallback, invalidateContractCache } from '@/utils/ethers.js';
 import { ADDRESSES, REGISTRY_ABI } from '@/config/contracts.js';
 
 const STATUS_MAP = { active: 0n, reviewing: 1n, completed: 2n, expired: 3n, cancelled: 4n, disputed: 5n };
@@ -16,7 +16,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
     if (!ADDRESSES.registry) { setLoading(false); return; }
     try {
       setLoading(true);
-      const reg    = getReadContract(ADDRESSES.registry, REGISTRY_ABI);
+      const reg    = await getReadContractWithFallback(ADDRESSES.registry, REGISTRY_ABI);
       const offset = page * LIMIT;
       let result, totalCount;
 
@@ -30,11 +30,14 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
 
       let filtered = [...result];
 
-      // Status filter (when not already filtered server-side)
-      // Use BigInt comparison — ethers v6 returns status as BigInt from the tuple
-      if (status !== 'all' && status !== 'active') {
+      // Status filter — always apply client-side so category+status combinations work correctly.
+      // When status === 'active' the server already filtered, but re-filtering is safe (idempotent).
+      // When category fetch was used server-side, status was never filtered — this fixes H-09.
+      if (status !== 'all') {
         const statusVal = STATUS_MAP[status];
-        if (statusVal !== undefined) filtered = filtered.filter(b => BigInt(b.status) === statusVal);
+        if (statusVal !== undefined) {
+          filtered = filtered.filter(b => BigInt(b.status) === statusVal);
+        }
       }
 
       // Search filter — client-side on title (cached from on-chain field)
@@ -55,8 +58,10 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       }
       // 'newest' is default (contract already returns newest-first)
 
-      // Featured bounties bubble to top
-      filtered.sort((a, b) => (b.featured ? 1 : 0) - (a.featured ? 1 : 0));
+      // Featured bounties bubble to top only on default (newest) sort — respect explicit sort preference
+      if (sort === 'newest') {
+        filtered.sort((a, b) => (b.featured ? 1 : 0) - (a.featured ? 1 : 0));
+      }
 
       setBounties(filtered);
 
@@ -71,6 +76,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
         setHasMore(offset + LIMIT < serverTotal);
       }
     } catch (err) {
+      if (err?.message?.includes('429')) invalidateContractCache(ADDRESSES.registry);
       console.error('[useBounties]', err);
       setError(err.message);
     } finally {
@@ -97,7 +103,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       if (intervalId) return;
       intervalId = setInterval(() => {
         if (!document.hidden) doLoad();
-      }, 15000);
+      }, 45000);
     };
 
     const stopPolling = () => {

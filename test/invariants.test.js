@@ -20,11 +20,11 @@ const { time }    = require("@nomicfoundation/hardhat-network-helpers");
 const ONE_DAY = 86400;
 const ETH     = (n) => ethers.parseEther(String(n));
 
-const POSTER_STAKE_BPS     = 500n;
-const MIN_POSTER_STAKE     = ETH(0.005);
-const SUBMISSION_STAKE_BPS = 100n;
-const MIN_SUBMISSION_STAKE = ETH(0.001);
-const MAX_SUBMISSION_STAKE = ETH(0.1);
+const CREATOR_STAKE_BPS     = 300n;
+const MIN_CREATOR_STAKE     = ETH(0.01);
+const SUBMISSION_STAKE_BPS  = 200n;
+const MIN_SUBMISSION_STAKE = ETH(0.005);
+const MAX_SUBMISSION_STAKE = ETH(5);
 const BPS_DENOM            = 10_000n;
 const GRACE_PERIOD_REJECT  = BigInt(2 * 3600);
 
@@ -63,16 +63,16 @@ async function deployAll() {
   return { owner, treasury, poster, hunter1, hunter2, hunter3, anyone, registry, escrow, reputation, identity, factory };
 }
 
-function calcPosterStake(totalReward) {
-  const pct = (totalReward * POSTER_STAKE_BPS) / BPS_DENOM;
-  return pct < MIN_POSTER_STAKE ? MIN_POSTER_STAKE : pct;
+function calcCreatorStake(totalReward) {
+  const pct = (totalReward * CREATOR_STAKE_BPS) / BPS_DENOM;
+  return pct < MIN_CREATOR_STAKE ? MIN_CREATOR_STAKE : pct;
 }
 
-function calcSubStake(totalReward, tierMultiplierBps = 10_000n) {
+function calcSubStake(totalReward) {
   let pct = (totalReward * SUBMISSION_STAKE_BPS) / BPS_DENOM;
   if (pct < MIN_SUBMISSION_STAKE) pct = MIN_SUBMISSION_STAKE;
   if (pct > MAX_SUBMISSION_STAKE) pct = MAX_SUBMISSION_STAKE;
-  return (pct * tierMultiplierBps) / BPS_DENOM;
+  return pct;
 }
 
 async function defaultParams(overrides = {}) {
@@ -92,13 +92,14 @@ async function defaultParams(overrides = {}) {
 }
 
 async function createBounty(factory, signer, p) {
-  const posterStake = calcPosterStake(p.totalReward);
-  const value = p.rewardType === 0 ? p.totalReward + posterStake : posterStake;
+  const creatorStake = calcCreatorStake(p.totalReward);
+  const value = p.rewardType === 0 ? p.totalReward + creatorStake : creatorStake;
   return factory.connect(signer).createBounty(
     p.ipfsHash, p.title, p.category,
     p.rewardType, p.rewardToken,
     p.totalReward, p.winnerCount, p.prizeWeights,
     p.deadline,
+    false, // requiresApplication
     { value }
   );
 }
@@ -123,7 +124,7 @@ describe("Invariant I-1: Factory balance covers all pending pools", function () 
     await identity.connect(hunter2).setUsername("inv1h2");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake1 = calcSubStake(ETH(0.5), 15_000n);
+    const stake1 = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake1 });
     await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake1 });
     await time.increase(Number(GRACE_PERIOD_REJECT) + 60);
@@ -149,7 +150,7 @@ describe("Invariant I-1: Factory balance covers all pending pools", function () 
     await identity.connect(hunter2).setUsername("inv2h2");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
     await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
     await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
@@ -171,7 +172,7 @@ describe("Invariant I-1: Factory balance covers all pending pools", function () 
     await identity.connect(hunter1).setUsername("inv3h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
     await time.increase(Number(GRACE_PERIOD_REJECT) + 60);
     const comp = (ETH(0.5) * 200n) / 10_000n;
@@ -194,17 +195,17 @@ describe("Invariant I-2: Escrow balance covers unreleased records", function () 
   it("after createBounty, escrow holds reward + poster stake", async function () {
     const { factory, escrow, poster } = await deployAll();
     const p = await defaultParams();
-    const posterStake = calcPosterStake(ETH(0.5));
+    const creatorStake = calcCreatorStake(ETH(0.5));
     await createBounty(factory, poster, p);
 
     const escrowBal = await ethers.provider.getBalance(await escrow.getAddress());
     const record = await escrow.getRecord(1);
-    const recordedStake = await escrow.posterStakes(1);
+    const recordedStake = await escrow.creatorStakes(1);
 
-    // I-2: escrow must hold exactly reward + poster stake
+    // I-2: escrow must hold exactly reward + creator stake
     expect(escrowBal).to.be.gte(record.amount + recordedStake);
     expect(record.amount).to.equal(ETH(0.5));
-    expect(recordedStake).to.equal(posterStake);
+    expect(recordedStake).to.equal(creatorStake);
   });
 
   it("after submission, escrow holds reward + poster stake + submission stake", async function () {
@@ -212,15 +213,15 @@ describe("Invariant I-2: Escrow balance covers unreleased records", function () 
     await identity.connect(hunter1).setUsername("inv4h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const subStake = calcSubStake(ETH(0.5), 15_000n);
+    const subStake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: subStake });
 
     const escrowBal    = await ethers.provider.getBalance(await escrow.getAddress());
     const record       = await escrow.getRecord(1);
-    const posterStake  = await escrow.posterStakes(1);
+    const creatorStake = await escrow.creatorStakes(1);
     const subStakeEsc  = await escrow.submissionStakes(1, hunter1.address);
 
-    expect(escrowBal).to.be.gte(record.amount + posterStake + subStakeEsc);
+    expect(escrowBal).to.be.gte(record.amount + creatorStake + subStakeEsc);
   });
 
   it("escrow balance decreases by exactly reward after approveWinners", async function () {
@@ -228,7 +229,7 @@ describe("Invariant I-2: Escrow balance covers unreleased records", function () 
     await identity.connect(hunter1).setUsername("inv5h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const subStake = calcSubStake(ETH(0.5), 15_000n);
+    const subStake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: subStake });
 
     const escrowBefore = await ethers.provider.getBalance(await escrow.getAddress());
@@ -250,7 +251,7 @@ describe("Invariant II-1: Terminal states imply escrow settled", function () {
     await identity.connect(hunter1).setUsername("sm1h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).approveWinners(1, [1], [1]);
 
@@ -287,7 +288,7 @@ describe("Invariant II-1: Terminal states imply escrow settled", function () {
     await identity.connect(hunter1).setUsername("sm2h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).approveWinners(1, [1], [1]);
 
@@ -303,7 +304,7 @@ describe("Invariant II-2: Submission state consistency", function () {
     await identity.connect(hunter1).setUsername("ss1h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).approveWinners(1, [1], [1]);
 
@@ -318,7 +319,7 @@ describe("Invariant II-2: Submission state consistency", function () {
     await identity.connect(hunter1).setUsername("ss2h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).rejectSubmission(1, 1);
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
@@ -335,7 +336,7 @@ describe("Invariant II-2: Submission state consistency", function () {
     await identity.connect(hunter1).setUsername("ss3h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await time.increase(Number(GRACE_PERIOD_REJECT) + 60);
     await factory.connect(poster).rejectSubmission(1, 1);
@@ -352,7 +353,7 @@ describe("Invariant II-3: Dispute state consistency", function () {
     await identity.connect(hunter1).setUsername("ds1h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).rejectSubmission(1, 1);
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
@@ -409,10 +410,10 @@ describe("Invariant IV-1: fraudCount only increases on fraud (BUG-RR-5 fix verif
     await identity.connect(hunter1).setUsername("rep1h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
 
-    const stats = await reputation.getHunterStats(hunter1.address);
+    const stats = await reputation.getBuilderStats(hunter1.address);
     expect(stats.fraudCount).to.equal(0n);
   });
 
@@ -421,28 +422,28 @@ describe("Invariant IV-1: fraudCount only increases on fraud (BUG-RR-5 fix verif
     await identity.connect(hunter1).setUsername("rep2h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).rejectSubmission(1, 1);
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
     await factory.connect(owner).resolveDispute(1, false, hunter1.address);
 
-    const stats = await reputation.getHunterStats(hunter1.address);
+    const stats = await reputation.getBuilderStats(hunter1.address);
     expect(stats.fraudCount).to.equal(1n);
   });
 
-  it("IV-2: getHunterScore always returns >= 0", async function () {
+  it("IV-2: getBuilderScore always returns >= 0", async function () {
     const { factory, reputation, owner, poster, hunter1, identity } = await deployAll();
     await identity.connect(hunter1).setUsername("rep3h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).rejectSubmission(1, 1);
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
     await factory.connect(owner).resolveDispute(1, false, hunter1.address);
 
-    const score = await reputation.getHunterScore(hunter1.address);
+    const score = await reputation.getBuilderScore(hunter1.address);
     expect(score).to.be.gte(0n);
   });
 });
@@ -457,7 +458,7 @@ describe("Invariant V-1: Timeout pool correctly funded", function () {
     await identity.connect(hunter2).setUsername("v1h2");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
     await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
     await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
@@ -482,7 +483,7 @@ describe("Invariant V-1: Timeout pool correctly funded", function () {
     await identity.connect(hunter2).setUsername("v1at2");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
     await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
     await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
@@ -524,7 +525,7 @@ describe("Invariant V-2: Submission stake accounting", function () {
     await identity.connect(hunter1).setUsername("v2h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
 
     expect(await escrow.submissionStakes(1, hunter1.address)).to.equal(stake);
@@ -537,7 +538,7 @@ describe("Invariant V-2: Submission stake accounting", function () {
     await identity.connect(hunter1).setUsername("v2h2");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5), 15_000n);
+    const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     await factory.connect(poster).rejectSubmission(1, 1);
 

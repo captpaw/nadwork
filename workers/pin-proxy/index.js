@@ -36,7 +36,11 @@ export default {
 
     // ── Validate proxy auth token (prevents public abuse of the worker) ───────
     const proxyToken = request.headers.get('X-Proxy-Token');
-    if (!env.PROXY_AUTH_TOKEN || proxyToken !== env.PROXY_AUTH_TOKEN) {
+    if (!env.PROXY_AUTH_TOKEN) {
+      console.error('[pin-proxy] PROXY_AUTH_TOKEN not configured');
+      return corsResponse(JSON.stringify({ error: 'Proxy misconfigured' }), 500, origin, allowed);
+    }
+    if (!proxyToken || proxyToken !== env.PROXY_AUTH_TOKEN) {
       return corsResponse(JSON.stringify({ error: 'Unauthorized' }), 401, origin, allowed);
     }
 

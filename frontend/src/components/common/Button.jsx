@@ -1,110 +1,121 @@
-import React, { useState } from 'react';
-import { theme as t } from '@/styles/theme.js';
+import { useState } from 'react';
+import { theme } from '../../styles/theme';
+import { Spinner } from './Spinner';
+
+const VARIANTS = {
+  primary: {
+    bg:        theme.colors.primary,
+    bgHover:   theme.colors.primaryHover,
+    color:     '#ffffff',
+    border:    'transparent',
+    shadow:    `0 2px 16px ${theme.colors.primaryGlow}`,
+  },
+  secondary: {
+    bg:        theme.colors.bg.elevated,
+    bgHover:   '#222222',
+    color:     theme.colors.text.primary,
+    border:    theme.colors.border.default,
+    shadow:    'none',
+  },
+  ghost: {
+    bg:        'transparent',
+    bgHover:   theme.colors.bg.elevated,
+    color:     theme.colors.text.secondary,
+    border:    'transparent',
+    shadow:    'none',
+  },
+  danger: {
+    bg:        theme.colors.red.dim,
+    bgHover:   'rgba(239,68,68,0.14)',
+    color:     theme.colors.red[400],
+    border:    theme.colors.red.border,
+    shadow:    'none',
+  },
+  success: {
+    bg:        theme.colors.green.dim,
+    bgHover:   'rgba(16,185,129,0.14)',
+    color:     theme.colors.green[400],
+    border:    theme.colors.green.border,
+    shadow:    'none',
+  },
+  outline: {
+    bg:        'transparent',
+    bgHover:   theme.colors.primaryDim,
+    color:     theme.colors.text.secondary,
+    border:    theme.colors.border.default,
+    shadow:    'none',
+  },
+};
+
+const SIZES = {
+  sm: { padding: '6px 14px', fontSize: 12, height: 30, gap: 5 },
+  md: { padding: '9px 20px', fontSize: 13, height: 38, gap: 7 },
+  lg: { padding: '12px 28px', fontSize: 14, height: 46, gap: 8 },
+};
 
 export default function Button({
   children,
   variant = 'primary',
   size = 'md',
-  icon,
-  iconRight,
   loading = false,
   disabled = false,
+  icon = null,
+  iconRight = null,
+  fullWidth = false,
   onClick,
   type = 'button',
-  style,
-  fullWidth = false,
+  style: extraStyle = {},
+  ...props
 }) {
+  const [hov, setHov] = useState(false);
   const [pressed, setPressed] = useState(false);
 
-  const heights = { sm: '30px', md: '36px', lg: '42px' };
-  const paddings = { sm: '0 12px', md: '0 16px', lg: '0 22px' };
-  const fontSizes = { sm: '12px', md: '13px', lg: '14px' };
-
-  const base = {
-    height: heights[size],
-    padding: paddings[size],
-    fontSize: fontSizes[size],
-    fontWeight: 550,
-    letterSpacing: '-0.01em',
-    borderRadius: t.radius.md,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '6px',
-    cursor: disabled || loading ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.4 : 1,
-    transition: 'background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease',
-    transform: pressed && !disabled ? 'scale(0.97)' : 'scale(1)',
-    userSelect: 'none',
-    whiteSpace: 'nowrap',
-    width: fullWidth ? '100%' : undefined,
-    border: 'none',
-    outline: 'none',
-    fontFamily: t.fonts.body,
-    textDecoration: 'none',
-  };
-
-  const variants = {
-    primary: {
-      background: t.colors.violet[600],
-      color: '#ffffff',
-      boxShadow: pressed ? 'none' : '0 1px 0 rgba(0,0,0,0.5)',
-    },
-    secondary: {
-      background: t.colors.bg.elevated,
-      color: t.colors.text.secondary,
-      border: '1px solid ' + t.colors.border.default,
-    },
-    ghost: {
-      background: 'transparent',
-      color: t.colors.text.muted,
-      border: '1px solid transparent',
-    },
-    danger: {
-      background: 'rgba(239,68,68,0.12)',
-      color: t.colors.red[400],
-      border: '1px solid rgba(239,68,68,0.2)',
-    },
-    success: {
-      background: 'rgba(34,197,94,0.1)',
-      color: t.colors.green[400],
-      border: '1px solid rgba(34,197,94,0.18)',
-    },
-  };
-
-  const [hov, setHov] = useState(false);
-
-  const hoverMap = {
-    primary:   { background: t.colors.violet[700] },
-    secondary: { background: t.colors.bg.hover, borderColor: t.colors.border.strong },
-    ghost:     { background: t.colors.bg.elevated, color: t.colors.text.secondary },
-    danger:    { background: 'rgba(239,68,68,0.18)' },
-    success:   { background: 'rgba(34,197,94,0.16)' },
-  };
-
-  const variantStyle = { ...variants[variant], ...(hov && !disabled && !loading ? hoverMap[variant] : {}) };
+  const v = VARIANTS[variant] || VARIANTS.primary;
+  const s = SIZES[size] || SIZES.md;
+  const isDisabled = disabled || loading;
 
   return (
     <button
       type={type}
-      onClick={!disabled && !loading ? onClick : undefined}
-      onMouseEnter={() => { if (!disabled && !loading) setHov(true); }}
+      disabled={isDisabled}
+      onClick={onClick}
+      onMouseEnter={() => !isDisabled && setHov(true)}
       onMouseLeave={() => { setHov(false); setPressed(false); }}
-      onMouseDown={() => { if (!disabled && !loading) setPressed(true); }}
+      onMouseDown={() => !isDisabled && setPressed(true)}
       onMouseUp={() => setPressed(false)}
-      style={{ ...base, ...variantStyle, ...style }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        gap: s.gap,
+        padding: s.padding,
+        height: s.height,
+        width: fullWidth ? '100%' : undefined,
+        background: hov && !isDisabled ? v.bgHover : v.bg,
+        color: isDisabled ? theme.colors.text.muted : v.color,
+        border: `1px solid ${v.border}`,
+        borderRadius: theme.radius.md,
+        fontSize: s.fontSize,
+        fontFamily: theme.fonts.body,
+        fontWeight: 600,
+        letterSpacing: '-0.01em',
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.45 : 1,
+        boxShadow: hov && !isDisabled ? 'none' : v.shadow,
+        transform: pressed ? 'scale(0.975)' : 'scale(1)',
+        transition: theme.transition,
+        whiteSpace: 'nowrap',
+        userSelect: 'none',
+        ...extraStyle,
+      }}
+      {...props}
     >
       {loading ? (
-        <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' style={{ animation: 'spin 0.7s linear infinite', flexShrink: 0 }}>
-          <circle cx='12' cy='12' r='9' strokeOpacity='0.25'/>
-          <path d='M12 3a9 9 0 019 9' strokeLinecap='round'/>
-        </svg>
-      ) : icon ? (
-        <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{icon}</span>
-      ) : null}
-      {children}
-      {!loading && iconRight && (
-        <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{iconRight}</span>
+        <Spinner size={s.height - 20} color={v.color} />
+      ) : (
+        <>
+          {icon && <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{icon}</span>}
+          {children}
+          {iconRight && <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{iconRight}</span>}
+        </>
       )}
     </button>
   );
