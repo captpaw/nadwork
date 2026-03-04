@@ -149,13 +149,13 @@ describe("Access Control", function () {
     const now = await blockNow();
     await expect(
       escrow.connect(poster).depositNative(1, poster.address, now + ONE_DAY, 0, { value: ETH(1) })
-    ).to.be.revertedWith("Escrow: not factory");
+    ).to.be.revertedWithCustomError(escrow, "EscrowNotFactory");
   });
 
   it("reputation rejects direct writes from non-factory", async function () {
     const { reputation, poster } = await deployAll();
     await expect(reputation.connect(poster).recordSubmission(poster.address))
-      .to.be.revertedWith("Reputation: not factory");
+      .to.be.revertedWithCustomError(reputation, "ReputationNotFactory");
   });
 
   it("only owner can setFactory on registry", async function () {
@@ -175,7 +175,7 @@ describe("Access Control", function () {
     const { escrow, owner, treasury } = await deployAll();
     await expect(
       escrow.connect(owner).release(1, [treasury.address], [100])
-    ).to.be.revertedWith("Escrow: not factory");
+    ).to.be.revertedWithCustomError(escrow, "EscrowNotFactory");
   });
 });
 
@@ -208,7 +208,7 @@ describe("createBounty — V3 (poster stake)", function () {
         false, // requiresApplication
         { value: p.totalReward } // only reward, missing creator stake
       )
-    ).to.be.revertedWith("Factory: wrong MON amount (reward + stake)");
+    ).to.be.revertedWithCustomError(factory, "FactoryWrongNativeAmount");
   });
 
   it("sets reviewDeadline on the bounty", async function () {
@@ -232,20 +232,20 @@ describe("createBounty — V3 (poster stake)", function () {
     const { factory, poster } = await deployAll();
     const now = await blockNow();
     const p = await defaultParams({ deadline: now + 100 });
-    await expect(createBounty(factory, poster, p)).to.be.revertedWith("Factory: deadline too soon");
+    await expect(createBounty(factory, poster, p)).to.be.revertedWithCustomError(factory, "FactoryDeadlineTooSoon");
   });
 
   it("reverts if deadline too far", async function () {
     const { factory, poster } = await deployAll();
     const now = await blockNow();
     const p = await defaultParams({ deadline: now + 181 * ONE_DAY });
-    await expect(createBounty(factory, poster, p)).to.be.revertedWith("Factory: deadline too far");
+    await expect(createBounty(factory, poster, p)).to.be.revertedWithCustomError(factory, "FactoryDeadlineTooFar");
   });
 
   it("reverts if prize weights don't sum to 100", async function () {
     const { factory, poster } = await deployAll();
     const p = await defaultParams({ winnerCount: 2, prizeWeights: [60, 30] });
-    await expect(createBounty(factory, poster, p)).to.be.revertedWith("Factory: weights must sum to 100");
+    await expect(createBounty(factory, poster, p)).to.be.revertedWithCustomError(factory, "FactoryWeightsMustSumTo100");
   });
 
   it("updates project reputation stats", async function () {
@@ -284,21 +284,21 @@ describe("submitWork — V3 (identity + submission stake)", function () {
     const stake = calcSubStake(ETH(0.5));
     await expect(
       factory.connect(hunter3).submitWork(1, "QmSub", { value: stake })
-    ).to.be.revertedWith("Factory: username required to submit");
+    ).to.be.revertedWithCustomError(factory, "FactoryUsernameRequired");
   });
 
   it("reverts if insufficient submission stake", async function () {
     const { factory, hunter1 } = await setup();
     await expect(
       factory.connect(hunter1).submitWork(1, "QmSub", { value: 0n })
-    ).to.be.revertedWith("Factory: insufficient submission stake");
+    ).to.be.revertedWithCustomError(factory, "FactoryInsufficientSubmissionStake");
   });
 
   it("poster cannot submit", async function () {
     const { factory, poster } = await setup();
     const stake = calcSubStake(ETH(0.5));
     await expect(factory.connect(poster).submitWork(1, "QmSub", { value: stake }))
-      .to.be.revertedWith("Factory: creator cannot submit");
+      .to.be.revertedWithCustomError(factory, "FactoryCreatorCannotSubmit");
   });
 
   it("hunter cannot submit twice", async function () {
@@ -306,7 +306,7 @@ describe("submitWork — V3 (identity + submission stake)", function () {
     const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub1", { value: stake });
     await expect(factory.connect(hunter1).submitWork(1, "QmSub2", { value: stake }))
-      .to.be.revertedWith("Factory: already submitted");
+      .to.be.revertedWithCustomError(factory, "FactoryAlreadySubmitted");
   });
 
   it("excess stake above required is refunded to hunter", async function () {
@@ -327,7 +327,7 @@ describe("submitWork — V3 (identity + submission stake)", function () {
     await time.increase(ONE_DAY * 4);
     const stake = calcSubStake(ETH(0.5));
     await expect(factory.connect(hunter1).submitWork(1, "QmSub", { value: stake }))
-      .to.be.revertedWith("Factory: deadline passed");
+      .to.be.revertedWithCustomError(factory, "FactoryDeadlinePassed");
   });
 
   it("builder with username can submit to bounty >= 1 MON (V4: no tier restriction)", async function () {
@@ -404,7 +404,7 @@ describe("approveWinners — V3 (stake refunds)", function () {
     const { factory, hunter2, identity } = await setup();
     await registerUsername(identity, hunter2, "us2");
     await expect(factory.connect(hunter2).approveWinners(1, [1], [1]))
-      .to.be.revertedWith("Factory: not creator");
+      .to.be.revertedWithCustomError(factory, "FactoryNotCreator");
   });
 });
 
@@ -446,7 +446,7 @@ describe("rejectSubmission — V3 (grace period)", function () {
     const { factory, hunter2, identity } = await setup();
     await registerUsername(identity, hunter2, "us2-r");
     await expect(factory.connect(hunter2).rejectSubmission(1, 1))
-      .to.be.revertedWith("Factory: not creator");
+      .to.be.revertedWithCustomError(factory, "FactoryNotCreator");
   });
 });
 
@@ -566,7 +566,7 @@ describe("expireBounty — V3", function () {
     await factory.connect(hunter1).submitWork(1, "QmSub1", { value: stake });
     await time.increase(ONE_DAY * 4);
     await expect(factory.expireBounty(1))
-      .to.be.revertedWith("Factory: has submissions, use triggerTimeout");
+      .to.be.revertedWithCustomError(factory, "FactoryHasSubmissionsUseTriggerTimeout");
   });
 });
 
@@ -617,7 +617,7 @@ describe("triggerTimeout — V3 (review deadline + poster stake slashed)", funct
     // Advance to deadline + 12h (midway through review window)
     await time.increase(ONE_DAY * 3 + ONE_DAY / 2);
     await expect(factory.triggerTimeout(1))
-      .to.be.revertedWith("Factory: review window active");
+      .to.be.revertedWithCustomError(factory, "FactoryReviewWindowActive");
   });
 });
 
@@ -702,7 +702,7 @@ describe("Dispute — V3 (stake outcomes)", function () {
     const balBefore = await ethers.provider.getBalance(hunter1.address);
     const tx = await factory.connect(hunter1).claimDisputeRefund();
     const rec = await tx.wait();
-    const gas = rec.gasUsed * tx.gasPrice;
+    const gas = rec.gasUsed * rec.gasPrice;
     const balAfter = await ethers.provider.getBalance(hunter1.address);
     expect(balAfter - balBefore + gas).to.be.closeTo(ETH(0.01), ETH(0.0001));
   });
@@ -714,11 +714,11 @@ describe("Dispute — V3 (stake outcomes)", function () {
 describe("Progressive Identity — Tier checks", function () {
   it("Tier 0 (anonymous) cannot submit to any bounty", async function () {
     const { factory, poster, hunter3 } = await deployAll();
-    const p = await defaultParams({ totalReward: ETH(0.5) });
+    const p = await defaultParams();
     await createBounty(factory, poster, p);
     const stake = calcSubStake(ETH(0.5));
     await expect(factory.connect(hunter3).submitWork(1, "QmSub", { value: stake }))
-      .to.be.revertedWith("Factory: username required to submit");
+      .to.be.revertedWithCustomError(factory, "FactoryUsernameRequired");
   });
 
   it("Tier 1 can submit to small bounty (<1 MON)", async function () {
@@ -758,7 +758,7 @@ describe("Reputation V3 — fraud penalties in score", function () {
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
     await factory.connect(owner).resolveDispute(1, false, hunter1.address);
 
-    const stats      = await reputation.builders(hunter1.address);
+    const stats = await reputation.builders(hunter1.address);
     const scoreAfter = await reputation.getBuilderScore(hunter1.address);
     expect(stats.disputeLost).to.equal(1n);
     // Score = (winCount×30) + (subCount×5) + (earned/1e15) - (fraudCount×50) - (disputeLost×15)
@@ -859,7 +859,7 @@ describe("Featured Bounty", function () {
     const p = await defaultParams();
     await createBounty(factory, poster, p);
     await expect(factory.connect(poster).setFeatured(1, true, { value: ETH(0.1) }))
-      .to.be.revertedWith("Factory: insufficient featured fee");
+      .to.be.revertedWithCustomError(factory, "FactoryInsufficientFeaturedFee");
   });
 });
 
@@ -870,7 +870,7 @@ describe("View helpers — V3", function () {
   it("getCreatorStake returns correct amount", async function () {
     const { factory } = await deployAll();
     const expected = calcCreatorStake(ETH(10));
-    const onChain  = await factory.getCreatorStake(ETH(10));
+    const onChain = await factory.getCreatorStake(ETH(10));
     expect(onChain).to.equal(expected);
   });
 
@@ -893,7 +893,7 @@ describe("sweep() — cannot steal pending dispute refunds (FIX-1)", function ()
     await createBounty(factory, poster, p);
     const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
-    // Reject within grace period so dispute window is open
+    // Reject within grace period so stake is held (not refunded) and dispute window is open
     await factory.connect(poster).rejectSubmission(1, 1);
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
     // Resolve in favor of hunter → queues 0.01 MON refund
@@ -905,7 +905,7 @@ describe("sweep() — cannot steal pending dispute refunds (FIX-1)", function ()
     const { factory, owner } = await setupDisputeWon();
     // Owner tries to sweep — factory balance = 0.01 MON (dispute deposit only)
     // sweepable = balance - _totalPendingRefunds = 0
-    await expect(factory.connect(owner).sweep()).to.be.revertedWith("Factory: nothing to sweep");
+    await expect(factory.connect(owner).sweep()).to.be.revertedWithCustomError(factory, "FactoryNothingToSweep");
   });
 
   it("hunter can still claim after sweep of unrelated fees", async function () {
@@ -917,11 +917,11 @@ describe("sweep() — cannot steal pending dispute refunds (FIX-1)", function ()
     await factory.connect(owner).sweep();
     // Hunter can still claim their 0.01 MON dispute deposit refund
     const before = await ethers.provider.getBalance(hunter1.address);
-    const tx   = await factory.connect(hunter1).claimDisputeRefund();
-    const rcpt = await tx.wait();
-    const gasUsed = rcpt.gasUsed * rcpt.gasPrice;
+    const tx = await factory.connect(hunter1).claimDisputeRefund();
+    const rec = await tx.wait();
+    const gas = rec.gasUsed * rec.gasPrice;
     const after = await ethers.provider.getBalance(hunter1.address);
-    expect(after - before + gasUsed).to.equal(ETH(0.01));
+    expect(after - before + gas).to.equal(ETH(0.01));
   });
 });
 
@@ -964,7 +964,7 @@ describe("transitionToReviewing() (FIX-9)", function () {
     const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     // Do NOT advance time
-    await expect(factory.transitionToReviewing(1)).to.be.revertedWith("Factory: deadline not reached");
+    await expect(factory.transitionToReviewing(1)).to.be.revertedWithCustomError(factory, "FactoryDeadlineNotReached");
   });
 
   it("reverts if no pending submissions exist", async function () {
@@ -972,14 +972,14 @@ describe("transitionToReviewing() (FIX-9)", function () {
     const p = await defaultParams();
     await createBounty(factory, poster, p);
     await time.increase(ONE_DAY * 3 + 60);
-    await expect(factory.transitionToReviewing(1)).to.be.revertedWith("Factory: no submissions");
+    await expect(factory.transitionToReviewing(1)).to.be.revertedWithCustomError(factory, "FactoryNoSubmissions");
   });
 
   it("reverts if called again on REVIEWING bounty", async function () {
     const { factory, anyone } = await setupExpiredWithSub();
     await factory.connect(anyone).transitionToReviewing(1);
     await expect(factory.connect(anyone).transitionToReviewing(1))
-      .to.be.revertedWith("Factory: not active");
+      .to.be.revertedWithCustomError(factory, "FactoryNotActive");
   });
 
   it("poster can still approveWinners after REVIEWING transition", async function () {
@@ -995,7 +995,7 @@ describe("transitionToReviewing() (FIX-9)", function () {
     const { factory, owner, anyone } = await setupExpiredWithSub();
     await factory.connect(owner).pause();
     await expect(factory.connect(anyone).transitionToReviewing(1))
-      .to.be.revertedWith("Factory: paused");
+      .to.be.revertedWithCustomError(factory, "FactoryPaused");
     await factory.connect(owner).unpause();
   });
 });
@@ -1037,7 +1037,7 @@ describe("FIX C-01: dispute window measured from rejectedAt", function () {
     await time.increase(2 * 3600 + 60);
     await expect(
       factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) })
-    ).to.be.revertedWith("Factory: dispute window expired");
+    ).to.be.revertedWithCustomError(factory, "FactoryDisputeWindowExpired");
   });
 
   it("withdrawRejectedStake also uses rejectedAt (FIX C-01)", async function () {
@@ -1046,7 +1046,7 @@ describe("FIX C-01: dispute window measured from rejectedAt", function () {
     // Cannot withdraw before 2h from rejectedAt
     await expect(
       factory.connect(hunter1).withdrawRejectedStake(1, 1)
-    ).to.be.revertedWith("Factory: grace period active - dispute instead");
+    ).to.be.revertedWithCustomError(factory, "FactoryGracePeriodActiveDisputeInstead");
     // Can withdraw after 2h from rejectedAt
     await time.increase(2 * 3600 + 60);
     await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1)).to.not.be.reverted;
@@ -1138,9 +1138,9 @@ describe("FIX H-01: cancelBounty pull-payment", function () {
     const comp = (ETH(0.5) * 200n) / 10_000n;
     await factory.connect(poster).cancelBounty(1, { value: comp });
     const h1Before = await ethers.provider.getBalance(hunter1.address);
-    const tx   = await factory.connect(hunter1).claimCancelComp();
-    const rcpt = await tx.wait();
-    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const tx = await factory.connect(hunter1).claimCancelComp();
+    const rec = await tx.wait();
+    const gas = rec.gasUsed * rec.gasPrice;
     const h1After = await ethers.provider.getBalance(hunter1.address);
     expect(h1After - h1Before + gas).to.equal(comp);
   });
@@ -1151,7 +1151,7 @@ describe("FIX H-01: cancelBounty pull-payment", function () {
     await factory.connect(poster).cancelBounty(1, { value: comp });
     await factory.connect(hunter1).claimCancelComp();
     await expect(factory.connect(hunter1).claimCancelComp())
-      .to.be.revertedWith("Factory: no cancel comp pending");
+      .to.be.revertedWithCustomError(factory, "FactoryNoCancelCompPending");
   });
 
   it("sweep() cannot steal cancel comp reserves (FIX H-01)", async function () {
@@ -1160,7 +1160,7 @@ describe("FIX H-01: cancelBounty pull-payment", function () {
     await factory.connect(poster).cancelBounty(1, { value: comp });
     // Factory only holds comp amount — sweepable = 0
     await expect(factory.connect(owner).sweep())
-      .to.be.revertedWith("Factory: nothing to sweep");
+      .to.be.revertedWithCustomError(factory, "FactoryNothingToSweep");
     // Send extra ETH, now sweep works without touching comp
     await anyone.sendTransaction({ to: await factory.getAddress(), value: ETH(0.05) });
     await factory.connect(owner).sweep();
@@ -1206,9 +1206,9 @@ describe("FIX H-02: triggerTimeout pull-payment", function () {
     await factory.connect(anyone).triggerTimeout(1);
     const pending = await factory.pendingTimeoutPayouts(hunter1.address);
     const h1Before = await ethers.provider.getBalance(hunter1.address);
-    const tx   = await factory.connect(hunter1).claimTimeoutPayout();
-    const rcpt = await tx.wait();
-    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const tx = await factory.connect(hunter1).claimTimeoutPayout();
+    const rec = await tx.wait();
+    const gas = rec.gasUsed * rec.gasPrice;
     const h1After = await ethers.provider.getBalance(hunter1.address);
     expect(h1After - h1Before + gas).to.equal(pending);
   });
@@ -1218,7 +1218,7 @@ describe("FIX H-02: triggerTimeout pull-payment", function () {
     await factory.connect(anyone).triggerTimeout(1);
     await factory.connect(hunter1).claimTimeoutPayout();
     await expect(factory.connect(hunter1).claimTimeoutPayout())
-      .to.be.revertedWith("Factory: no timeout payout pending");
+      .to.be.revertedWithCustomError(factory, "FactoryNoTimeoutPayoutPending");
   });
 
   it("FIX L-02: triggerTimeout records poster reputation penalty", async function () {
@@ -1250,13 +1250,13 @@ describe("FIX H-03: ranks[] validation", function () {
   it("reverts on duplicate ranks", async function () {
     const { factory, poster } = await setupTwoSubmissions();
     await expect(factory.connect(poster).approveWinners(1, [1, 2], [1, 1]))
-      .to.be.revertedWith("Factory: duplicate rank");
+      .to.be.revertedWithCustomError(factory, "FactoryDuplicateRank");
   });
 
   it("reverts on rank out of range", async function () {
     const { factory, poster } = await setupTwoSubmissions();
     await expect(factory.connect(poster).approveWinners(1, [1, 2], [1, 3]))
-      .to.be.revertedWith("Factory: rank out of range");
+      .to.be.revertedWithCustomError(factory, "FactoryRankOutOfRange");
   });
 
   it("rank 1 maps to prizeWeights[0] (highest prize)", async function () {
@@ -1321,7 +1321,7 @@ describe("FIX H-04: claimPrimary timelock (initiateClaim + finalizeClaim)", func
 
   it("emits PrimaryClaimInitiated with correct claimableAfter", async function () {
     const { identity, hunter1, hunter2 } = await setupLinkedWallets();
-    const tx   = await identity.connect(hunter2).initiateClaim(hunter1.address);
+    const tx = await identity.connect(hunter2).initiateClaim(hunter1.address);
     const rcpt = await tx.wait();
     const block = await ethers.provider.getBlock(rcpt.blockNumber);
     await expect(tx)
@@ -1360,7 +1360,8 @@ describe("FIX H-04: claimPrimary timelock (initiateClaim + finalizeClaim)", func
 describe("FIX M-03: username 90-day cooldown after admin clear", function () {
   it("freed username cannot be immediately reclaimed", async function () {
     const { identity, owner, hunter1, hunter2 } = await deployAll();
-    await registerUsername(identity, hunter1, "coold");
+    await identity.connect(hunter1).setUsername("coold");
+    // Admin clears the username
     await identity.connect(owner).adminClearUsername(hunter1.address);
     // hunter2 tries to claim immediately — should fail
     await expect(identity.connect(hunter2).setUsername("coold"))
@@ -1369,18 +1370,19 @@ describe("FIX M-03: username 90-day cooldown after admin clear", function () {
 
   it("freed username can be reclaimed after 90 days", async function () {
     const { identity, owner, hunter1, hunter2 } = await deployAll();
-    await registerUsername(identity, hunter1, "coold2");
+    await identity.connect(hunter1).setUsername("coold2");
     await identity.connect(owner).adminClearUsername(hunter1.address);
-    await time.increase(90 * ONE_DAY + 60);
+    // Advance 90 days + 1 second
+    await time.increase(90 * ONE_DAY + 1);
     await expect(identity.connect(hunter2).setUsername("coold2")).to.not.be.reverted;
   });
 
   it("getUsernameCooldownEnd returns correct timestamp", async function () {
     const { identity, owner, hunter1 } = await deployAll();
-    await registerUsername(identity, hunter1, "coold3");
-    const clearTx   = await identity.connect(owner).adminClearUsername(hunter1.address);
+    await identity.connect(hunter1).setUsername("coold3");
+    const clearTx = await identity.connect(owner).adminClearUsername(hunter1.address);
     const clearRcpt = await clearTx.wait();
-    const block     = await ethers.provider.getBlock(clearRcpt.blockNumber);
+    const block = await ethers.provider.getBlock(clearRcpt.blockNumber);
     const cooldownEnd = await identity.getUsernameCooldownEnd("coold3");
     expect(cooldownEnd).to.equal(BigInt(block.timestamp) + BigInt(90 * ONE_DAY));
   });
@@ -1464,7 +1466,7 @@ describe("ERC20 bounty full flow", function () {
     // Step 1: small bounty so hunter1 gets a prior submission (becomes Tier 2)
     const now = await blockNow();
     const smallReward = ETH(0.5);
-    const smallStake  = calcCreatorStake(smallReward);
+    const smallStake = calcCreatorStake(smallReward);
     await factory.connect(poster).createBounty(
       "QmSmall", "Small Bounty", "dev",
       0, ethers.ZeroAddress, smallReward, 1, [100],
@@ -1517,9 +1519,9 @@ describe("withdrawRejectedStake flow", function () {
     // Advance past grace period
     await time.increase(2 * 3600 + 60);
     const h1Before = await ethers.provider.getBalance(hunter1.address);
-    const tx   = await factory.connect(hunter1).withdrawRejectedStake(1, 1);
-    const rcpt = await tx.wait();
-    const gas  = rcpt.gasUsed * rcpt.gasPrice;
+    const tx = await factory.connect(hunter1).withdrawRejectedStake(1, 1);
+    const rec = await tx.wait();
+    const gas = rec.gasUsed * rec.gasPrice;
     const h1After = await ethers.provider.getBalance(hunter1.address);
     expect(h1After - h1Before + gas).to.equal(stake);
   });
@@ -1534,7 +1536,7 @@ describe("withdrawRejectedStake flow", function () {
     await factory.connect(hunter1).submitWork(1, "QmSub", { value: stake });
     // PENDING status triggers "Factory: not rejected" before rejectedAt check
     await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1))
-      .to.be.revertedWith("Factory: not rejected");
+      .to.be.revertedWithCustomError(factory, "FactoryNotRejected");
     // Note: the rejectedAt check "Factory: not rejected yet" is a belt-and-suspenders guard
     // for cases where status=REJECTED but rejectedAt is unset (legacy data migration safety).
   });
@@ -1551,7 +1553,7 @@ describe("withdrawRejectedStake flow", function () {
     await factory.connect(hunter1).raiseDispute(1, 1, { value: ETH(0.01) });
     await time.increase(2 * 3600 + 60);
     await expect(factory.connect(hunter1).withdrawRejectedStake(1, 1))
-      .to.be.revertedWith("Factory: already disputed");
+      .to.be.revertedWithCustomError(factory, "FactoryAlreadyDisputed");
   });
 });
 
@@ -1608,7 +1610,7 @@ describe("FIX NE-1+NE-2 — claimTimeoutPullable correctness", function () {
     expect(record.released).to.equal(true);
     // Cannot trigger timeout again (already settled)
     await expect(factory.connect(hunter1).triggerTimeout(1))
-      .to.be.revertedWith("Factory: not active");
+      .to.be.revertedWithCustomError(factory, "FactoryNotActive");
   });
 });
 
@@ -1823,42 +1825,50 @@ describe("FIX BUG-RR-5 — fraudCount incremented on dispute deny", function () 
 // Bugs: rejectSubmission, expireBounty, triggerTimeout missing whenNotPaused
 // ─────────────────────────────────────────────────────────────────────────────
 describe("FIX Low — whenNotPaused guards", function () {
-  it("rejectSubmission blocked when paused", async function () {
+  async function setup() {
     const ctx = await deployAll();
-    const { factory, owner, poster, hunter1, identity } = ctx;
-    await registerUsername(identity, hunter1, "gs1");
+    const { factory, poster, hunter1, identity } = ctx;
+    await registerUsername(identity, hunter1, "pause-h1");
     const p = await defaultParams();
     await createBounty(factory, poster, p);
+    return ctx;
+  }
+
+  async function setupTwoSubmissions() {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, hunter2, identity } = ctx;
+    await registerUsername(identity, hunter1, "pause-h1");
+    await registerUsername(identity, hunter2, "pause-h2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5));
+    await factory.connect(hunter2).submitWork(1, "QmS2", { value: stake });
+    return ctx;
+  }
+
+  it("rejectSubmission blocked when paused", async function () {
+    const { factory, poster, hunter1, owner } = await setupTwoSubmissions();
     const stake = calcSubStake(ETH(0.5));
     await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
     await factory.connect(owner).pause();
     await expect(factory.connect(poster).rejectSubmission(1, 1))
-      .to.be.revertedWith("Factory: paused");
+      .to.be.revertedWithCustomError(factory, "FactoryPaused");
   });
 
   it("expireBounty blocked when paused", async function () {
-    const ctx = await deployAll();
-    const { factory, owner, poster, identity } = ctx;
-    const p = await defaultParams();
-    await createBounty(factory, poster, p);
+    const { factory, owner } = await setup();
     await time.increase(ONE_DAY * 3 + 60);
     await factory.connect(owner).pause();
     await expect(factory.connect(owner).expireBounty(1))
-      .to.be.revertedWith("Factory: paused");
+      .to.be.revertedWithCustomError(factory, "FactoryPaused");
   });
 
   it("triggerTimeout blocked when paused", async function () {
-    const ctx = await deployAll();
-    const { factory, owner, poster, hunter1, identity } = ctx;
-    await registerUsername(identity, hunter1, "gs3");
-    const p = await defaultParams();
-    await createBounty(factory, poster, p);
-    const stake = calcSubStake(ETH(0.5));
-    await factory.connect(hunter1).submitWork(1, "QmS1", { value: stake });
+    const { factory, hunter1, owner } = await setup();
     await time.increase(ONE_DAY * 3 + ONE_DAY + 60);
     await factory.connect(owner).pause();
     await expect(factory.connect(hunter1).triggerTimeout(1))
-      .to.be.revertedWith("Factory: paused");
+      .to.be.revertedWithCustomError(factory, "FactoryPaused");
   });
 });
 

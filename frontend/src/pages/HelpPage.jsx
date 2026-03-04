@@ -4,39 +4,56 @@ import { IconChevronDown, IconBounties, IconTarget, IconChart, IconGlobe, IconEx
 import { ADDRESSES } from '../config/contracts';
 
 const FACTORY_ADDRESS = ADDRESSES.factory || '';
+const EXPLORER_BASE = 'https://testnet.monadexplorer.com';
 
 const FAQS = [
   {
     q: 'How does escrow work?',
-    a: 'When you post a bounty, the reward + 3% platform fee is locked in the NadWork smart contract. The funds are held trustlessly — no human can access them. Only the smart contract can release them: to the approved winner, or back to you if the deadline expires with no approval.',
+    a: 'When you create a bounty as a Creator, the reward + 3% platform fee is locked in the NadWork smart contract. Funds are held trustlessly — no human can access them. Only the contract can release: to the approved Builder, or back to the Creator if the deadline expires with no approval.',
   },
   {
     q: 'What is the platform fee?',
-    a: 'NadWork charges a 3% platform fee on the reward amount. This is taken at the time of posting and locked alongside the reward. It is non-refundable regardless of outcome.',
+    a: 'NadWork charges a 3% platform fee on the reward amount, taken at bounty creation and locked alongside the reward. It is non-refundable regardless of outcome.',
   },
   {
-    q: 'Can I cancel a bounty?',
-    a: 'You can cancel an active bounty only if there are no pending submissions. Once submissions exist, you cannot cancel — this protects builders who have invested time in the task.',
+    q: 'Who are Creators and Builders?',
+    a: 'Creators post bounties and fund the rewards. Builders deliver work and claim rewards when approved. All payments flow through the smart contract — no middlemen.',
   },
   {
-    q: 'What happens if the deadline passes?',
-    a: 'If the deadline passes without an approved submission, the reward is automatically returned to your wallet. No action is required.',
+    q: 'Do I need a username to submit?',
+    a: 'Yes. Builders must set a username (via Profile) before submitting work. This ties your on-chain identity to your reputation and protects the platform from spam.',
+  },
+  {
+    q: 'What are curated bounties (Apply flow)?',
+    a: 'Some bounties require application first. For these, Builders submit a proposal; the Creator reviews and approves who can then deliver. Once approved, you submit work as usual. Look for the "Curated" badge on a bounty.',
   },
   {
     q: 'How do I submit work?',
-    a: 'Browse active bounties, click into a bounty, and click "Submit Work". You will upload your deliverables and write a description. Submissions require a small stake (varies by tier) to prevent spam — this is returned when your submission is reviewed.',
+    a: 'Browse active bounties, open one, and click "Submit Work". Upload deliverables and a description. A submission stake is required to prevent spam; it is returned when your work is reviewed (or refunded after rejection if the grace period has passed).',
   },
   {
-    q: 'What is a builder tier?',
-    a: 'Builders are ranked by their track record. Higher tiers require a larger submission stake but also give priority visibility in the submission list. Build your tier by completing bounties successfully.',
+    q: 'What is the revision flow?',
+    a: 'Revision is an off-chain option: Creators can request changes via a revision request (IPFS link shared with the Builder). Builders upload a revision response. This keeps iteration flexible without on-chain transactions. Links are shared via the bounty page.',
+  },
+  {
+    q: 'Can I cancel a bounty?',
+    a: 'Yes, but only if there are no pending submissions. Once Builders have submitted, you cannot cancel — this protects them. With submissions, you can still reject and proceed to review or timeout.',
+  },
+  {
+    q: 'What happens if the deadline passes?',
+    a: 'If the deadline passes without an approved submission, the reward is automatically refundable to the Creator. No action required.',
+  },
+  {
+    q: 'What is a dispute?',
+    a: 'If a Builder is rejected, they can raise a dispute (within 2 hours of rejection) by locking a dispute deposit. The BountyFactory owner resolves: in favor of Builder (reward + refund) or Creator (Builder stake may be slashed). This is a safety valve for unfair rejections.',
   },
   {
     q: 'Which network does NadWork run on?',
-    a: 'NadWork is deployed on Monad Testnet. All transactions, rewards, and fees are in MON (testnet). Mainnet deployment will follow after thorough testing.',
+    a: 'NadWork is deployed on Monad Testnet. All transactions, rewards, and fees use MON. Mainnet deployment will follow after thorough testing.',
   },
   {
     q: 'Is the contract verified?',
-    a: 'Yes. The NadWork smart contract is open source and verified on MonadScan. You can inspect every function before interacting.',
+    a: 'Yes. The NadWork smart contracts are open source and verified on Monad Explorer. You can inspect every function before interacting.',
   },
 ];
 
@@ -90,37 +107,104 @@ export default function HelpPage() {
         <h1 style={{ fontFamily: theme.fonts.body, fontWeight: 800, fontSize: 'clamp(28px,5vw,48px)', letterSpacing: '-0.04em', color: theme.colors.text.primary, marginBottom: 12 }}>
           How NadWork works
         </h1>
-        <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, maxWidth: 480, lineHeight: 1.75 }}>
-          NadWork is a trustless bounty platform on Monad. Smart contracts handle escrow, payment, and dispute resolution — no middlemen.
+        <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, maxWidth: 520, lineHeight: 1.75 }}>
+          NadWork is a trustless bounty platform on Monad. Creators post tasks and lock rewards; Builders deliver work and get paid. Smart contracts handle escrow, payments, applications, and dispute resolution — no middlemen.
         </p>
       </div>
 
-      {/* Quick links */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8, marginBottom: 48 }}>
-        {[
-          { Icon: IconBounties, label: 'Smart Contract', href: FACTORY_ADDRESS ? `https://testnet.monadexplorer.com/address/${FACTORY_ADDRESS}` : 'https://testnet.monadexplorer.com' },
-          { Icon: IconTarget,   label: 'GitHub Repo',    href: 'https://github.com/captpaw/nadwork' },
-          { Icon: IconChart,    label: 'Discord',        href: 'https://discord.gg/nadwork' },
-          { Icon: IconGlobe,    label: 'MonadScan',      href: 'https://testnet.monadexplorer.com' },
-        ].map(({ Icon, label, href }) => (
-          <a key={label} href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '14px 16px',
-            background: theme.colors.bg.card,
-            border: `1px solid ${theme.colors.border.subtle}`,
-            borderRadius: theme.radius.md,
-            textDecoration: 'none', transition: theme.transition,
-          }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primaryBorder; e.currentTarget.style.background = theme.colors.bg.elevated; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
-          >
-            <Icon size={18} color={theme.colors.primary} style={{ flexShrink: 0 }} />
-            <span style={{ fontFamily: theme.fonts.body, fontSize: 13, fontWeight: 500, color: theme.colors.text.secondary, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 6 }}>{label} <IconExternalLink size={12} color={theme.colors.text.muted} /></span>
-          </a>
-        ))}
+      {/* How it works */}
+      <div style={{
+        marginBottom: 48,
+        padding: '24px 28px',
+        background: theme.colors.bg.card,
+        border: `1px solid ${theme.colors.border.subtle}`,
+        borderRadius: theme.radius.xl,
+      }}>
+        <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 16 }}>
+          Flow
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {[
+            { n: '01', title: 'Creator posts a bounty', desc: 'Set reward, deadline, and optionally require applications. Funds lock in the contract.' },
+            { n: '02', title: 'Builder delivers', desc: 'Submit work (or apply first for curated bounties). Creator reviews. Revisions possible off-chain.' },
+            { n: '03', title: 'Contract pays', desc: 'Creator approves winner; contract releases payment. Or: timeout/cancel triggers refunds and comps.' },
+          ].map(({ n, title, desc }) => (
+            <div key={n} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+              <span style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.primary, fontWeight: 600, flexShrink: 0 }}>{n}</span>
+              <div>
+                <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 14, color: theme.colors.text.primary, marginBottom: 4 }}>{title}</div>
+                <div style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.muted, lineHeight: 1.6 }}>{desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Quick links — app navigation */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12 }}>
+          App
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {[
+            { label: 'Browse Bounties', href: '#/bounties', internal: true },
+            { label: 'Post a Bounty', href: '#/post', internal: true },
+            { label: 'Dashboard', href: '#/dashboard', internal: true },
+            { label: 'Leaderboard', href: '#/leaderboard', internal: true },
+            { label: 'Profile', href: '#/profile', internal: true },
+          ].map(({ label, href, internal }) => (
+            <a key={label} href={href}
+              onClick={internal ? (e) => { e.preventDefault(); window.location.hash = href; } : undefined}
+              target={internal ? undefined : '_blank'}
+              rel={internal ? undefined : 'noopener noreferrer'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                padding: '10px 16px',
+                background: theme.colors.bg.card,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.md,
+                textDecoration: 'none', transition: theme.transition,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primaryBorder; e.currentTarget.style.background = theme.colors.bg.elevated; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
+            >
+              <span style={{ fontFamily: theme.fonts.body, fontSize: 13, fontWeight: 500, color: theme.colors.text.secondary }}>{label}</span>
+            </a>
+          ))}
+        </div>
+      </div>
+
+      {/* Quick links — external */}
+      <div style={{ marginBottom: 48 }}>
+        <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12 }}>
+          External
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
+          {[
+            { Icon: IconBounties, label: 'BountyFactory (Explorer)', href: FACTORY_ADDRESS ? `${EXPLORER_BASE}/address/${FACTORY_ADDRESS}` : EXPLORER_BASE },
+            { Icon: IconTarget,   label: 'GitHub',                 href: 'https://github.com/captpaw/nadwork' },
+            { Icon: IconChart,   label: 'Discord',                 href: 'https://discord.gg/nadwork' },
+            { Icon: IconGlobe,   label: 'Monad Explorer',          href: EXPLORER_BASE },
+          ].map(({ Icon, label, href }) => (
+            <a key={label} href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '14px 16px',
+                background: theme.colors.bg.card,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.md,
+                textDecoration: 'none', transition: theme.transition,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primaryBorder; e.currentTarget.style.background = theme.colors.bg.elevated; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
+            >
+              <Icon size={18} color={theme.colors.primary} style={{ flexShrink: 0 }} />
+              <span style={{ fontFamily: theme.fonts.body, fontSize: 13, fontWeight: 500, color: theme.colors.text.secondary, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 6 }}>{label} <IconExternalLink size={12} color={theme.colors.text.muted} /></span>
+            </a>
+          ))}
+        </div>
       </div>
 
       {/* FAQ */}

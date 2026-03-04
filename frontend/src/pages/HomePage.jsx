@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { theme } from '../styles/theme';
 import { useGlobalStats } from '../hooks/useGlobalStats';
+import { useBounties } from '../hooks/useBounties';
 import { Seal } from '../components/common/Logo';
 import { IconChevronRight, IconBounties, IconTarget, IconChart } from '../components/icons';
 
@@ -32,6 +33,61 @@ const CAT_COLORS = {
   other:    { c: theme.colors.text.secondary, border: theme.colors.border.default },
 };
 
+// Default demo bounties — only used when there is no on-chain data yet.
+const DEMO_ORBITAL_BOUNTIES = [
+  { id: '1', title: 'Build Monad DEX router UI',      reward: '4.0', category: 'dev' },
+  { id: '2', title: 'Smart contract audit report',    reward: '2.5', category: 'research' },
+  { id: '3', title: 'Design NadWork marketing kit',   reward: '1.8', category: 'design' },
+  { id: '4', title: 'Integrate Monad RPC dashboard',  reward: '3.2', category: 'dev' },
+  { id: '5', title: 'Translate docs to Bahasa',       reward: '0.6', category: 'content' },
+  { id: '6', title: 'Create onboarding video',        reward: '1.2', category: 'content' },
+];
+
+// Pick which bounties appear in the orbital board:
+// - prefer ACTIVE bounties
+// - featured ones first
+// - then highest-total-reward
+// - capped to 6 unique ids
+function selectOrbitalBounties(source) {
+  if (!Array.isArray(source) || source.length === 0) return [];
+
+  const normalized = source.map((b) => {
+    let total = 0n;
+    try {
+      if (b.totalReward != null) {
+        total = BigInt(b.totalReward);
+      }
+    } catch {
+      total = 0n;
+    }
+    const statusNum = b.status != null ? Number(b.status) : 0;
+    return { ...b, _totalRewardSort: total, _statusNum: statusNum };
+  });
+
+  const active = normalized.filter(b => b._statusNum === 0);
+  const base   = active.length ? active : normalized;
+
+  const featured = base.filter(b => b.featured);
+  const regular  = base.filter(b => !b.featured);
+
+  const sortByRewardDesc = (arr) =>
+    [...arr].sort((a, b) => (b._totalRewardSort > a._totalRewardSort ? 1 : b._totalRewardSort < a._totalRewardSort ? -1 : 0));
+
+  const ordered = [...sortByRewardDesc(featured), ...sortByRewardDesc(regular)];
+
+  const seen = new Set();
+  const picked = [];
+  for (const b of ordered) {
+    const key = String(b.id ?? b.bountyId ?? '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    picked.push(b);
+    if (picked.length >= 6) break;
+  }
+
+  return picked;
+}
+
 // BountyNode: wrapRef is at position:absolute left:0 top:0
 // RAF moves it with transform: translate(px,py) translate(-50%,-50%)
 // so the card center lands exactly on the orbit position
@@ -40,7 +96,16 @@ function BountyNode({ bounty, size, wrapRef, onClick }) {
   const cat      = CAT_COLORS[(bounty.category || 'other').toLowerCase()] || CAT_COLORS.other;
   const w        = size === 'sm' ? 148 : 164;
   const title    = bounty?.title    || 'Untitled';
-  const reward   = bounty?.reward   || bounty?.rewardAmount || '—';
+  let reward     = bounty?.reward   || bounty?.rewardAmount;
+  if (!reward && bounty?.totalReward != null) {
+    const raw = typeof bounty.totalReward === 'bigint'
+      ? Number(bounty.totalReward)
+      : Number(bounty.totalReward.toString?.() ?? bounty.totalReward);
+    if (!Number.isNaN(raw) && raw > 0) {
+      reward = (raw / 1e18).toFixed(2).replace(/\.?0+$/, '');
+    }
+  }
+  if (!reward) reward = '—';
   const category = bounty?.category || 'Other';
 
   return (
@@ -270,17 +335,12 @@ function OrbitalBoard({ bounties }) {
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
   const { bountyCount, submissionCount } = useGlobalStats();
+  const { bounties: activeBounties = [] } = useBounties({ status: 'active', sort: 'reward' });
 
   useEffect(() => { setTimeout(() => setMounted(true), 80); }, []);
 
-  const orbitalBounties = [
-    { id: '1', title: 'Build Monad DEX router UI', reward: '4.0', category: 'dev' },
-    { id: '2', title: 'Smart contract audit report', reward: '2.5', category: 'research' },
-    { id: '3', title: 'Design NadWork marketing kit', reward: '1.8', category: 'design' },
-    { id: '4', title: 'Integrate Monad RPC dashboard', reward: '3.2', category: 'dev' },
-    { id: '5', title: 'Translate docs to Bahasa', reward: '0.6', category: 'content' },
-    { id: '6', title: 'Create onboarding video', reward: '1.2', category: 'content' },
-  ];
+  const selected = selectOrbitalBounties(activeBounties);
+  const orbitalBounties = selected.length ? selected : DEMO_ORBITAL_BOUNTIES;
 
   return (
     <div style={{ background: theme.colors.bg.base, minHeight: '100vh' }}>
@@ -381,15 +441,45 @@ export default function HomePage() {
           transform: mounted ? 'translateY(0)' : 'translateY(8px)',
           transition: 'all 0.7s ease 0.4s',
         }}>
-          <a href="#/bounties" style={{
-            padding: '13px 32px',
-            background: theme.colors.primary, color: '#fff',
-            border: 'none', borderRadius: theme.radius.lg, fontSize: 15,
-            fontFamily: theme.fonts.body, fontWeight: 700,
-            letterSpacing: '-0.01em', cursor: 'pointer',
-            boxShadow: `0 4px 28px ${theme.colors.primaryGlow}`,
-            textDecoration: 'none', display: 'inline-block',
-          }}>Browse Bounties <IconChevronRight size={16} color="#fff" style={{ marginLeft: 6, verticalAlign: 'middle' }} /></a>
+          <a
+            href="#/bounties"
+            onClick={(e) => {
+              e.preventDefault();
+              window.location.hash = '#/bounties';
+            }}
+            style={{
+              padding: '13px 32px',
+              background: theme.colors.primary,
+              color: '#fff',
+              border: 'none',
+              borderRadius: theme.radius.lg,
+              fontSize: 15,
+              fontFamily: theme.fonts.body,
+              fontWeight: 700,
+              letterSpacing: '-0.01em',
+              cursor: 'pointer',
+              boxShadow: `0 4px 28px ${theme.colors.primaryGlow}`,
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              transition: 'transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = theme.colors.primaryBright || theme.colors.primary;
+              e.currentTarget.style.transform = 'translateY(-1px)';
+              e.currentTarget.style.boxShadow = `0 8px 32px ${theme.colors.primaryGlow}`;
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = theme.colors.primary;
+              e.currentTarget.style.transform = 'translateY(0)';
+              e.currentTarget.style.boxShadow = `0 4px 28px ${theme.colors.primaryGlow}`;
+            }}
+          >
+            <span>Browse Bounties</span>
+            <IconChevronRight size={16} color="#fff" style={{ verticalAlign: 'middle' }} />
+          </a>
           <a href="#/post" style={{
             padding: '13px 28px',
             background: 'transparent', color: theme.colors.text.secondary,
@@ -466,17 +556,29 @@ export default function HomePage() {
           opacity: mounted ? 1 : 0, transition: 'opacity 0.9s ease 0.8s',
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
         }}>
-          <a href="#/bounties" style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            padding: '12px 32px',
-            background: 'transparent',
-            border: `1px solid ${theme.colors.border.strong}`,
-            borderRadius: theme.radius.lg, fontSize: 14,
-            fontFamily: theme.fonts.body, fontWeight: 600,
-            color: theme.colors.text.primary,
-            letterSpacing: '-0.01em', cursor: 'pointer', textDecoration: 'none',
-            transition: 'all 0.2s ease',
-          }}
+          <a
+            href="#/bounties"
+            onClick={(e) => {
+              e.preventDefault();
+              window.location.hash = '#/bounties';
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 32px',
+              background: 'transparent',
+              border: `1px solid ${theme.colors.border.strong}`,
+              borderRadius: theme.radius.lg,
+              fontSize: 14,
+              fontFamily: theme.fonts.body,
+              fontWeight: 600,
+              color: theme.colors.text.primary,
+              letterSpacing: '-0.01em',
+              cursor: 'pointer',
+              textDecoration: 'none',
+              transition: 'all 0.2s ease',
+            }}
             onMouseEnter={e => {
               e.currentTarget.style.background = theme.colors.primaryDim;
               e.currentTarget.style.borderColor = theme.colors.primary;

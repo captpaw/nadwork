@@ -4,6 +4,10 @@ pragma solidity ^0.8.24;
 import "./IdentityRegistry.sol";
 
 contract ReputationRegistry {
+    error ReputationNotOwner();
+    error ReputationNotFactory();
+    error ReputationZeroAddress();
+
     address public owner;
     address public factory;
     IdentityRegistry public identity;
@@ -40,13 +44,13 @@ contract ReputationRegistry {
     event IdentitySet(address indexed identity);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
-    modifier onlyOwner()   { require(msg.sender == owner,   "Reputation: not owner");   _; }
-    modifier onlyFactory() { require(msg.sender == factory, "Reputation: not factory"); _; }
+    modifier onlyOwner()   { if (msg.sender != owner)   revert ReputationNotOwner();   _; }
+    modifier onlyFactory() { if (msg.sender != factory) revert ReputationNotFactory(); _; }
 
     constructor() { owner = msg.sender; }
 
     function setFactory(address _factory) external onlyOwner {
-        require(_factory != address(0), "Reputation: zero address");
+        if (_factory == address(0)) revert ReputationZeroAddress();
         factory = _factory;
         emit FactorySet(_factory);
     }
@@ -56,13 +60,13 @@ contract ReputationRegistry {
      *         Optional — if not set, each wallet is treated as its own primary (backward compatible).
      */
     function setIdentity(address _identity) external onlyOwner {
-        require(_identity != address(0), "Reputation: zero address");
+        if (_identity == address(0)) revert ReputationZeroAddress();
         identity = IdentityRegistry(_identity);
         emit IdentitySet(_identity);
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "Reputation: zero address");
+        if (newOwner == address(0)) revert ReputationZeroAddress();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }

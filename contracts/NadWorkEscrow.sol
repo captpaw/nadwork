@@ -2,6 +2,36 @@
 pragma solidity ^0.8.24;
 
 contract NadWorkEscrow {
+    error EscrowNotFactory();
+    error EscrowNotOwner();
+    error EscrowReentrant();
+    error EscrowPaused();
+    error EscrowZeroAddress();
+    error EscrowUnauthorized();
+    error EscrowNoTreasury();
+    error EscrowZeroRewardValue();
+    error EscrowAlreadyDeposited();
+    error EscrowZeroAmount();
+    error EscrowZeroToken();
+    error EscrowTransferFromFailed();
+    error EscrowZeroActualAmount();
+    error EscrowNoWinners();
+    error EscrowLengthMismatch();
+    error EscrowNotFound();
+    error EscrowAlreadySettled();
+    error EscrowWeightsMustSum100();
+    error EscrowNoBuilders();
+    error EscrowERC20FeeFailed();
+    error EscrowERC20PayoutFailed();
+    error EscrowZeroStake();
+    error EscrowStakeAlreadyExists();
+    error EscrowNoStakeToRefund();
+    error EscrowStakeAlreadyHeld();
+    error EscrowInvalidBps();
+    error EscrowZeroRecipient();
+    error EscrowMONTransferFailed();
+    error EscrowERC20TransferFailed();
+
     uint256 public constant FEE_BPS      = 300;
     uint256 public constant BPS_DENOM    = 10_000;
     uint256 public constant GRACE_PERIOD = 7 days;
@@ -51,25 +81,25 @@ contract NadWorkEscrow {
     event CreatorStakeSlashed(uint256 indexed bountyId, uint256 toBuilders, uint256 toTreasury);
 
     // FIX H-SC-4: Removed `|| msg.sender == owner` — owner cannot bypass factory logic
-    modifier onlyFactory()   { require(msg.sender == factory, "Escrow: not factory"); _; }
-    modifier onlyOwner()     { require(msg.sender == owner,   "Escrow: not owner");   _; }
-    modifier nonReentrant()  { require(_locked == 0, "Escrow: reentrant"); _locked = 1; _; _locked = 0; }
-    modifier whenNotPaused() { require(!_paused, "Escrow: paused"); _; }
+    modifier onlyFactory()   { if (msg.sender != factory) revert EscrowNotFactory(); _; }
+    modifier onlyOwner()     { if (msg.sender != owner)   revert EscrowNotOwner();   _; }
+    modifier nonReentrant()  { if (_locked != 0) revert EscrowReentrant(); _locked = 1; _; _locked = 0; }
+    modifier whenNotPaused() { if (_paused) revert EscrowPaused(); _; }
 
     constructor(address _treasury) {
-        require(_treasury != address(0), "Escrow: zero treasury");
+        if (_treasury == address(0)) revert EscrowZeroAddress();
         owner = msg.sender;
         treasury = _treasury;
     }
 
     function setFactory(address _factory) external onlyOwner {
-        require(_factory != address(0), "Escrow: zero address");
+        if (_factory == address(0)) revert EscrowZeroAddress();
         factory = _factory;
         emit FactorySet(_factory);
     }
 
     function setTreasury(address _treasury) external onlyOwner {
-        require(_treasury != address(0), "Escrow: zero address");
+        if (_treasury == address(0)) revert EscrowZeroAddress();
         treasury = _treasury;
         emit TreasurySet(_treasury);
     }
@@ -78,14 +108,14 @@ contract NadWorkEscrow {
     function unpause() external onlyOwner { _paused = false; }
 
     function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "Escrow: zero address");
+        if (newOwner == address(0)) revert EscrowZeroAddress();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
     // Accept ETH from factory only (featured fees, dispute deposits etc.)
     receive() external payable {
-        require(msg.sender == factory, "Escrow: unauthorized");
+        if (msg.sender != factory) revert EscrowUnauthorized();
     }
 
     // FIX M-SC-1: sweepFees uses pull-pattern accumulation via payable receive;
@@ -93,7 +123,7 @@ contract NadWorkEscrow {
     // the factory can still retry with a new treasury address.
     function sweepFees() external payable onlyFactory {
         if (msg.value > 0) {
-            require(treasury != address(0), "Escrow: no treasury");
+            if (treasury == address(0)) revert EscrowNoTreasury();
             _safeTransferMON(treasury, msg.value);
             emit FeeSwept(treasury, msg.value);
         }
@@ -103,8 +133,8 @@ contract NadWorkEscrow {
     function depositNative(uint256 bountyId, address depositor, uint256 deadline, uint256 stakeAmount)
         external payable onlyFactory whenNotPaused nonReentrant
     {
-        require(msg.value > stakeAmount,               "Escrow: zero reward value");
-        require(_records[bountyId].amount == 0,        "Escrow: already deposited");
+        if (msg.value <= stakeAmount) revert EscrowZeroRewardValue();
+        if (_records[bountyId].amount != 0) revert EscrowAlreadyDeposited();
         uint256 rewardAmount = msg.value - stakeAmount;
         _records[bountyId] = EscrowRecord({
             depositor: depositor, rewardToken: address(0),
@@ -123,15 +153,15 @@ contract NadWorkEscrow {
     function depositERC20(uint256 bountyId, address depositor, address token, uint256 amount, uint256 deadline)
         external payable onlyFactory whenNotPaused nonReentrant
     {
-        require(amount > 0,                        "Escrow: zero amount");
-        require(token != address(0),               "Escrow: zero token");
-        require(_records[bountyId].amount == 0,    "Escrow: already deposited");
+        if (amount == 0) revert EscrowZeroAmount();
+        if (token == address(0)) revert EscrowZeroToken();
+        if (_records[bountyId].amount != 0) revert EscrowAlreadyDeposited();
 
         uint256 balBefore = _balanceOf(token, address(this));
         bool ok = _transferFrom(token, depositor, address(this), amount);
-        require(ok, "Escrow: ERC20 transferFrom failed");
+        if (!ok) revert EscrowTransferFromFailed();
         uint256 actualAmount = _balanceOf(token, address(this)) - balBefore;
-        require(actualAmount > 0, "Escrow: zero actual amount received");
+        if (actualAmount == 0) revert EscrowZeroActualAmount();
 
         _records[bountyId] = EscrowRecord({
             depositor: depositor, rewardToken: token,
@@ -149,15 +179,15 @@ contract NadWorkEscrow {
     function release(uint256 bountyId, address[] calldata winners, uint8[] calldata weights)
         external onlyFactory nonReentrant
     {
-        require(winners.length > 0,                    "Escrow: no winners");
-        require(winners.length == weights.length,      "Escrow: length mismatch");
+        if (winners.length == 0) revert EscrowNoWinners();
+        if (winners.length != weights.length) revert EscrowLengthMismatch();
         EscrowRecord storage r = _records[bountyId];
-        require(r.amount > 0,                          "Escrow: not found");
-        require(!r.released && !r.refunded,            "Escrow: already settled");
+        if (r.amount == 0) revert EscrowNotFound();
+        if (r.released || r.refunded) revert EscrowAlreadySettled();
 
         uint256 weightSum = 0;
         for (uint256 i = 0; i < weights.length; i++) weightSum += weights[i];
-        require(weightSum == 100, "Escrow: weights must sum to 100");
+        if (weightSum != 100) revert EscrowWeightsMustSum100();
 
         r.released = true;
         uint256 total      = r.amount;
@@ -184,10 +214,10 @@ contract NadWorkEscrow {
     function releaseToAll(uint256 bountyId, address[] calldata builders)
         external onlyFactory nonReentrant
     {
-        require(builders.length > 0, "Escrow: no builders");
+        if (builders.length == 0) revert EscrowNoBuilders();
         EscrowRecord storage r = _records[bountyId];
-        require(r.amount > 0,               "Escrow: not found");
-        require(!r.released && !r.refunded, "Escrow: already settled");
+        if (r.amount == 0) revert EscrowNotFound();
+        if (r.released || r.refunded) revert EscrowAlreadySettled();
 
         r.released = true;
         uint256 total      = r.amount;
@@ -210,10 +240,10 @@ contract NadWorkEscrow {
     function claimTimeout(uint256 bountyId, address[] calldata builders)
         external onlyFactory nonReentrant
     {
-        require(builders.length > 0, "Escrow: no builders");
+        if (builders.length == 0) revert EscrowNoBuilders();
         EscrowRecord storage r = _records[bountyId];
-        require(r.amount > 0,               "Escrow: not found");
-        require(!r.released && !r.refunded, "Escrow: already settled");
+        if (r.amount == 0) revert EscrowNotFound();
+        if (r.released || r.refunded) revert EscrowAlreadySettled();
 
         r.released = true;
         uint256 total      = r.amount;
@@ -241,10 +271,10 @@ contract NadWorkEscrow {
         external onlyFactory nonReentrant
         returns (uint256 perBuilderAmount, uint256 builderPool)
     {
-        require(builders.length > 0, "Escrow: no builders");
+        if (builders.length == 0) revert EscrowNoBuilders();
         EscrowRecord storage r = _records[bountyId];
-        require(r.amount > 0,               "Escrow: not found");
-        require(!r.released && !r.refunded, "Escrow: already settled");
+        if (r.amount == 0) revert EscrowNotFound();
+        if (r.released || r.refunded) revert EscrowAlreadySettled();
 
         r.released = true;
         uint256 total = r.amount;
@@ -258,14 +288,14 @@ contract NadWorkEscrow {
         } else {
             // ERC20: fall back to push-payment (safe for ERC20 since transfer failures aren't reentrancy DoS)
             bool ok = _transferERC20(r.rewardToken, treasury, fee);
-            require(ok, "Escrow: ERC20 fee transfer failed");
+            if (!ok) revert EscrowERC20FeeFailed();
             uint256 each = builderPool / builders.length;
             uint256 dust = builderPool - each * builders.length;
             for (uint256 i = 0; i < builders.length; i++) {
                 uint256 payout = (i == builders.length - 1) ? each + dust : each;
                 if (payout > 0) {
                     bool tokOk = _transferERC20(r.rewardToken, builders[i], payout);
-                    require(tokOk, "Escrow: ERC20 payout failed");
+                    if (!tokOk) revert EscrowERC20PayoutFailed();
                 }
             }
             builderPool = 0; // signal to factory that ERC20 was handled directly
@@ -279,8 +309,8 @@ contract NadWorkEscrow {
     // Also returns creator stake if any (caller must handle separately via refundCreatorStake)
     function refund(uint256 bountyId) external onlyFactory nonReentrant {
         EscrowRecord storage r = _records[bountyId];
-        require(r.amount > 0,               "Escrow: not found");
-        require(!r.released && !r.refunded, "Escrow: already settled");
+        if (r.amount == 0) revert EscrowNotFound();
+        if (r.released || r.refunded) revert EscrowAlreadySettled();
         r.refunded = true;
         _transfer(r.rewardToken, r.depositor, r.amount);
         emit Refunded(bountyId, r.depositor, r.amount);
@@ -292,8 +322,8 @@ contract NadWorkEscrow {
     function depositSubmissionStake(uint256 bountyId, address builder)
         external payable onlyFactory nonReentrant
     {
-        require(msg.value > 0, "Escrow: zero stake");
-        require(submissionStakes[bountyId][builder] == 0, "Escrow: stake already exists");
+        if (msg.value == 0) revert EscrowZeroStake();
+        if (submissionStakes[bountyId][builder] != 0) revert EscrowStakeAlreadyExists();
         submissionStakes[bountyId][builder] = msg.value;
         emit SubmissionStakeDeposited(bountyId, builder, msg.value);
     }
@@ -303,7 +333,7 @@ contract NadWorkEscrow {
         external onlyFactory nonReentrant
     {
         uint256 amount = submissionStakes[bountyId][builder];
-        require(amount > 0, "Escrow: no stake to refund");
+        if (amount == 0) revert EscrowNoStakeToRefund();
         submissionStakes[bountyId][builder] = 0;
         _safeTransferMON(builder, amount);
         emit SubmissionStakeRefunded(bountyId, builder, amount);
@@ -332,7 +362,7 @@ contract NadWorkEscrow {
         uint256 amount = submissionStakes[bountyId][builder];
         if (amount == 0) return; // stake already returned or never existed
         submissionStakes[bountyId][builder] = 0;
-        require(treasury != address(0), "Escrow: no treasury");
+        if (treasury == address(0)) revert EscrowNoTreasury();
         _safeTransferMON(treasury, amount);
         emit SubmissionStakeSlashed(bountyId, builder, amount);
     }
@@ -345,7 +375,7 @@ contract NadWorkEscrow {
     {
         uint256 amount = submissionStakes[bountyId][builder];
         if (amount == 0) return; // stake was already refunded or did not exist
-        require(heldDisputeStakes[bountyId][builder] == 0, "Escrow: stake already held");
+        if (heldDisputeStakes[bountyId][builder] != 0) revert EscrowStakeAlreadyHeld();
         submissionStakes[bountyId][builder] = 0;
         heldDisputeStakes[bountyId][builder] = amount;
         emit DisputeStakeHeld(bountyId, builder, amount);
@@ -373,7 +403,7 @@ contract NadWorkEscrow {
         uint256 amount = heldDisputeStakes[bountyId][builder];
         if (amount == 0) return;
         heldDisputeStakes[bountyId][builder] = 0;
-        require(treasury != address(0), "Escrow: no treasury");
+        if (treasury == address(0)) revert EscrowNoTreasury();
         _safeTransferMON(treasury, amount);
         emit DisputeStakeSlashed(bountyId, builder, amount);
     }
@@ -400,7 +430,7 @@ contract NadWorkEscrow {
         uint256 total = creatorStakes[bountyId];
         if (total == 0) return;
         creatorStakes[bountyId] = 0;
-        require(builderShareBps <= 10_000, "Escrow: invalid bps");
+        if (builderShareBps > 10_000) revert EscrowInvalidBps();
 
         uint256 toBuilders  = (total * builderShareBps) / 10_000;
         uint256 toTreasury = total - toBuilders;
@@ -418,7 +448,7 @@ contract NadWorkEscrow {
         }
 
         if (toTreasury > 0) {
-            require(treasury != address(0), "Escrow: no treasury");
+            if (treasury == address(0)) revert EscrowNoTreasury();
             _safeTransferMON(treasury, toTreasury);
         }
         emit CreatorStakeSlashed(bountyId, toBuilders, toTreasury);
@@ -437,15 +467,15 @@ contract NadWorkEscrow {
             _safeTransferMON(to, amount);
         } else {
             bool ok = _transferERC20(token, to, amount);
-            require(ok, "Escrow: ERC20 transfer failed");
+            if (!ok) revert EscrowERC20TransferFailed();
         }
     }
 
     // FIX L-SC-1: Increased gas from 30_000 to 100_000 to support multisig wallets
     function _safeTransferMON(address to, uint256 amount) internal {
-        require(to != address(0), "Escrow: zero recipient");
+        if (to == address(0)) revert EscrowZeroRecipient();
         (bool ok,) = to.call{value: amount, gas: 100_000}("");
-        require(ok, "Escrow: MON transfer failed");
+        if (!ok) revert EscrowMONTransferFailed();
     }
 
     function _balanceOf(address token, address account) internal view returns (uint256) {

@@ -180,7 +180,7 @@ describe("Invariant I-1: Factory balance covers all pending pools", function () 
 
     // Can only sweep surplus, not pending amounts
     await expect(factory.connect(owner).sweep())
-      .to.be.revertedWith("Factory: nothing to sweep");
+      .to.be.revertedWithCustomError(factory, "FactoryNothingToSweep");
 
     // Hunter can still claim
     const h1Before = await ethers.provider.getBalance(hunter1.address);
@@ -383,21 +383,21 @@ describe("Invariant III-1: Factory-only mutations", function () {
     const now = await blockNow();
     await expect(
       escrow.connect(poster).depositNative(1, poster.address, now + ONE_DAY, 0n, { value: ETH(0.1) })
-    ).to.be.revertedWith("Escrow: not factory");
+    ).to.be.revertedWithCustomError(escrow, "EscrowNotFactory");
   });
 
   it("reputation rejects direct recordWin call from non-factory", async function () {
     const { reputation, hunter1 } = await deployAll();
     await expect(
       reputation.connect(hunter1).recordWin(hunter1.address, ETH(1), ethers.ZeroAddress)
-    ).to.be.revertedWith("Reputation: not factory");
+    ).to.be.revertedWithCustomError(reputation, "ReputationNotFactory");
   });
 
   it("escrow rejects direct refundSubmissionStake from non-factory", async function () {
     const { escrow, hunter1 } = await deployAll();
     await expect(
       escrow.connect(hunter1).refundSubmissionStake(1, hunter1.address)
-    ).to.be.revertedWith("Escrow: not factory");
+    ).to.be.revertedWithCustomError(escrow, "EscrowNotFactory");
   });
 });
 

@@ -72,8 +72,10 @@ export default function AdminPage() {
   const [investigateMeta, setInvestigateMeta] = useState({}); // bountyId -> { bountyMeta, subMeta }
   const [resolving, setResolving] = useState(null);
   const [confirmResolve, setConfirmResolve] = useState(null);
+  const [factoryOwner, setFactoryOwner] = useState(null);
 
   const isAdmin = address && ADMIN_WALLETS.includes(address.toLowerCase());
+  const isFactoryOwner = address && factoryOwner && address.toLowerCase() === factoryOwner.toLowerCase();
 
   const loadDisputeInfo = useCallback(async () => {
     if (!ADDRESSES.registry || !bounties.length) return;
@@ -106,6 +108,28 @@ export default function AdminPage() {
   useEffect(() => {
     loadDisputeInfo();
   }, [loadDisputeInfo]);
+
+  useEffect(() => {
+    if (!ADDRESSES.factory) {
+      setFactoryOwner(null);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const factory = await getReadContractWithFallback(ADDRESSES.factory, FACTORY_ABI);
+        const owner = await factory.owner();
+        if (!cancelled) setFactoryOwner(owner);
+      } catch (err) {
+        console.error('[AdminPage] loadFactoryOwner', err);
+        if (!cancelled) setFactoryOwner(null);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, ADDRESSES.factory]);
 
   // Load bounty + submission metadata when Investigate panel is expanded
   useEffect(() => {
@@ -140,6 +164,10 @@ export default function AdminPage() {
     if (!confirmResolve) return;
     const { bountyId, inFavorOfBuilders } = confirmResolve;
     setConfirmResolve(null); // close modal
+    if (!isFactoryOwner) {
+      toast('Only the BountyFactory owner can resolve disputes.', 'error');
+      return;
+    }
     const info = disputeInfo[bountyId];
     const disputingBuilder = info?.disputingBuilder;
     if (!disputingBuilder || disputingBuilder === '0x0000000000000000000000000000000000000000') {
@@ -354,7 +382,7 @@ export default function AdminPage() {
             const disputingBuilder = info?.disputingBuilder;
             const rejectedAt = info?.rejectedAt;
             const subIpfs = info?.submissionIpfsHash;
-            const canResolve = disputingBuilder && disputingBuilder !== '0x0000000000000000000000000000000000000000';
+            const canResolve = isFactoryOwner && disputingBuilder && disputingBuilder !== '0x0000000000000000000000000000000000000000';
             const isResolving =
               resolving === `${b.id}-builder` || resolving === `${b.id}-creator`;
             const bountyTitle = b.title || `Bounty #${b.id}`;

@@ -18,6 +18,26 @@
 
 const PINATA_PIN_URL = 'https://api.pinata.cloud/pinning/pinJSONToIPFS';
 
+// ── Simple in-memory rate limiter (best-effort per Worker isolate) ────────────
+// Limits each IP to RATE_LIMIT_MAX requests per RATE_LIMIT_WINDOW_MS.
+// NOTE: Cloudflare spins up multiple isolates under load, so this is per-isolate.
+// For stricter enforcement, use Cloudflare Rate Limiting rules in the dashboard
+// (Workers > your worker > Settings > Rate Limiting) — no code change needed.
+const RATE_LIMIT_MAX        = 20;          // max requests per window
+const RATE_LIMIT_WINDOW_MS  = 60_000;     // 1-minute window
+const _rateLimitMap = new Map();           // ip → { count, windowStart }
+
+function isRateLimited(ip) {
+  const now  = Date.now();
+  const entry = _rateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    _rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT_MAX;
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '*';
@@ -26,6 +46,12 @@ export default {
     // ── CORS preflight ────────────────────────────────────────────────────────
     if (request.method === 'OPTIONS') {
       return corsResponse(null, 204, origin, allowed);
+    }
+
+    // ── Rate limiting (per IP, best-effort) ──────────────────────────────────
+    const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+    if (isRateLimited(clientIp)) {
+      return corsResponse(JSON.stringify({ error: 'Too many requests' }), 429, origin, allowed);
     }
 
     // ── Only accept POST /api/pin ─────────────────────────────────────────────
