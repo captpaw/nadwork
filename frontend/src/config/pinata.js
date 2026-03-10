@@ -1,28 +1,60 @@
-const API_KEY    = import.meta.env.VITE_PINATA_API_KEY        || '';
+﻿const API_KEY    = import.meta.env.VITE_PINATA_API_KEY        || '';
 const API_SECRET = import.meta.env.VITE_PINATA_SECRET_API_KEY || '';
 const GATEWAY    = import.meta.env.VITE_PINATA_GATEWAY        || 'https://gateway.pinata.cloud/ipfs/';
-// VITE_PIN_PROXY_URL  — URL of the Cloudflare Worker proxy (e.g. https://nadwork.xyz/api/pin)
-// VITE_PIN_PROXY_TOKEN — X-Proxy-Token secret shared with the Worker
-const PROXY_URL   = import.meta.env.VITE_PIN_PROXY_URL   || '';
-const PROXY_TOKEN = import.meta.env.VITE_PIN_PROXY_TOKEN || '';
+// VITE_PIN_PROXY_URL - URL of the Cloudflare Worker proxy (e.g. https://nadwork.xyz/api/pin)
+const PROXY_URL = import.meta.env.VITE_PIN_PROXY_URL || '';
 
-const GATEWAYS = [
-  GATEWAY,
+const PUBLIC_GATEWAYS = [
   'https://ipfs.io/ipfs/',
   'https://dweb.link/ipfs/',
   'https://nftstorage.link/ipfs/',
 ];
 
+const USE_IPFS_PROXY = import.meta.env.DEV && (import.meta.env.VITE_USE_IPFS_PROXY !== '0');
+const DEV_IPFS_PROXY = typeof window !== 'undefined' && USE_IPFS_PROXY
+  ? `${window.location.origin}/ipfs-proxy/`
+  : '';
+const EXTERNAL_IPFS_PROXY = (import.meta.env.VITE_IPFS_PROXY_URL || '').trim();
+
+function withTrailingSlash(url) {
+  if (!url) return '';
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+function unique(items) {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+const PROXY_GATEWAYS = unique([
+  withTrailingSlash(EXTERNAL_IPFS_PROXY),
+  withTrailingSlash(DEV_IPFS_PROXY),
+]);
+
+// Preferred order:
+// - proxy routes first (same-origin / controlled infra)
+// - then fallback public gateways
+// - then configured vendor gateway (dev) or first-party gateway (prod)
+const DEV_GATEWAYS = USE_IPFS_PROXY
+  ? unique([...PROXY_GATEWAYS, ...PUBLIC_GATEWAYS])
+  : unique([...PROXY_GATEWAYS, ...PUBLIC_GATEWAYS, GATEWAY]);
+
+const GATEWAYS = import.meta.env.DEV
+  ? DEV_GATEWAYS
+  : unique([...PROXY_GATEWAYS, GATEWAY, ...PUBLIC_GATEWAYS]);
+
 const jsonCache = new Map();
+const jsonInFlight = new Map();
+const jsonFailureUntil = new Map();
+const JSON_FAIL_TTL_MS = 30_000;
 
 /**
  * Upload JSON metadata to IPFS via Pinata.
  *
  * Priority:
- *  1. Cloudflare Worker proxy (VITE_PIN_PROXY_URL + VITE_PIN_PROXY_TOKEN)
- *     — production path: secret never leaves the server.
+ *  1. Cloudflare Worker proxy (VITE_PIN_PROXY_URL)
+ *     - production path: Pinata secret never leaves the server.
  *  2. Direct Pinata API with key+secret (local dev fallback).
- *     — only used when proxy is not configured.
+ *     â€” only used when proxy is not configured.
  */
 export async function uploadJSON(data, name = 'nadwork-data') {
   const payload = JSON.stringify({ pinataMetadata: { name }, pinataContent: data });
@@ -30,22 +62,17 @@ export async function uploadJSON(data, name = 'nadwork-data') {
   const isProd = import.meta.env.PROD;
   const isDev  = import.meta.env.DEV;
 
-  // In production we *require* the proxy and never talk to Pinata directly
+  // In production we require the proxy and never talk to Pinata directly
   if (isProd && !PROXY_URL) {
-    throw new Error('IPFS proxy is required in production. Set VITE_PIN_PROXY_URL and VITE_PIN_PROXY_TOKEN.');
+    throw new Error('IPFS proxy is required in production. Set VITE_PIN_PROXY_URL.');
   }
 
-  // ── Path 1: Cloudflare Worker proxy ──────────────────────────────────────
+  // Path 1: Cloudflare Worker proxy
   if (PROXY_URL) {
-    if (!PROXY_TOKEN) {
-      throw new Error('IPFS proxy token is required. Set VITE_PIN_PROXY_TOKEN.');
-    }
-    const headers = { 'Content-Type': 'application/json' };
-    headers['X-Proxy-Token'] = PROXY_TOKEN;
 
     const proxyRes = await fetch(PROXY_URL, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: payload,
     }).catch(() => null);
 
@@ -57,7 +84,7 @@ export async function uploadJSON(data, name = 'nadwork-data') {
     throw new Error('IPFS proxy error: ' + errText);
   }
 
-  // ── Path 2: Direct Pinata API (local dev only) ────────────────────────────
+  // Path 2: Direct Pinata API (local dev only)
   if (!isDev) {
     // Should never happen in production because we already enforced PROXY_URL above.
     throw new Error('Direct Pinata access is disabled outside local dev. Configure VITE_PIN_PROXY_URL.');
@@ -89,23 +116,53 @@ export async function fetchJSON(cid) {
   if (!cid) return null;
   if (jsonCache.has(cid)) return jsonCache.get(cid);
 
-  for (const gw of GATEWAYS) {
-    try {
-      const res = await fetch(gw + cid, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const data = await res.json();
+  const failUntil = jsonFailureUntil.get(cid) || 0;
+  if (failUntil > Date.now()) return null;
+
+  const pending = jsonInFlight.get(cid);
+  if (pending) return pending;
+
+  const task = (async () => {
+    for (const gw of GATEWAYS) {
+      try {
+        const res = await fetch(gw + cid, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) continue;
+
+        const data = await res.json().catch(() => null);
+        if (!data || typeof data !== 'object') continue;
+
         jsonCache.set(cid, data);
+        jsonFailureUntil.delete(cid);
         return data;
+      } catch {
+        // try next gateway
       }
-    } catch {}
+    }
+    return null;
+  })();
+
+  jsonInFlight.set(cid, task);
+  try {
+    const result = await task;
+    if (!result) {
+      jsonFailureUntil.set(cid, Date.now() + JSON_FAIL_TTL_MS);
+    }
+    return result;
+  } finally {
+    jsonInFlight.delete(cid);
   }
-  return null;
+}
+
+// Synchronous cache read â€” returns null if not yet fetched; no network call.
+// Used for best-effort skills filtering in useBounties (no IPFS roundtrip).
+export function getCachedJSON(cid) {
+  return cid ? (jsonCache.get(cid) ?? null) : null;
 }
 
 // FIX L-FE-8: Export gateway so other components can use configured value
 export { GATEWAY };
 
-// V2 bounty metadata — fullDescription stored as Markdown
+// V2 bounty metadata â€” fullDescription stored as Markdown
 export function buildBountyMeta({
   title,
   shortDescription = '',
@@ -137,7 +194,7 @@ export function buildBountyMeta({
   };
 }
 
-// V4: Application proposal metadata — short proposal before full submission
+// V4: Application proposal metadata â€” short proposal before full submission
 export function buildProposalMeta({
   bountyId,
   builderAddress,
@@ -153,7 +210,7 @@ export function buildProposalMeta({
   };
 }
 
-// Opsi B: Revision request (creator → builder) — off-chain, stored on IPFS
+// Opsi B: Revision request (creator â†’ builder) â€” off-chain, stored on IPFS
 export function buildRevisionRequestMeta({
   bountyId,
   submissionId,
@@ -173,7 +230,7 @@ export function buildRevisionRequestMeta({
   };
 }
 
-// Opsi B: Revision response (builder → creator) — off-chain, stored on IPFS
+// Opsi B: Revision response (builder â†’ creator) â€” off-chain, stored on IPFS
 export function buildRevisionResponseMeta({
   bountyId,
   submissionId,
@@ -199,7 +256,7 @@ export function buildRevisionResponseMeta({
   };
 }
 
-// V2 submission metadata — description stored as Markdown, deliverables typed
+// V2 submission metadata â€” description stored as Markdown, deliverables typed
 export function buildSubmissionMeta({
   bountyId,
   builderAddress,
@@ -221,3 +278,5 @@ export function buildSubmissionMeta({
     timestamp: Math.floor(Date.now() / 1000),
   };
 }
+
+

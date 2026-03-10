@@ -1,4 +1,4 @@
-import { useState, lazy, Suspense } from 'react';
+﻿import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { theme } from '../styles/theme';
 import { useAccount } from 'wagmi';
 import Badge from '../components/common/Badge';
@@ -7,9 +7,128 @@ import { PageLoader } from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import { AvatarDisplay, AvatarEditable } from '../components/common/Avatar';
 import { useProfile } from '../hooks/useProfile';
+import { fetchJSON } from '../config/pinata';
+import { getResolvedRegistryContract } from '../utils/registry.js';
 import { useIdentity } from '../hooks/useIdentity';
 import { useProfileMeta } from '../hooks/useProfileMeta';
 import { getAvatarSrc } from '../hooks/useAvatar';
+import { hasIndexer, querySubgraph, GQL_GET_CREATOR_BOUNTIES } from '../hooks/useIndexer';
+function getDeliverableLinks(deliverables) {
+  const items = Array.isArray(deliverables) ? deliverables : [];
+  const links = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    let url = '';
+    if (typeof item === 'string') {
+      url = item.trim();
+    } else if (item && typeof item === 'object') {
+      const candidate = [item.url, item.value, item.href, item.link].find(
+        (value) => typeof value === 'string' && value.trim()
+      );
+      url = candidate ? candidate.trim() : '';
+    }
+
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    links.push(url);
+  }
+
+  return links;
+}
+
+// â”€â”€ Portfolio card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function PortfolioCard({ submission, meta, bountyTitle, bountyReward }) {
+  const [hov, setHov] = useState(false);
+  const desc   = meta?.description || meta?.fullDescription || null;
+  const links  = getDeliverableLinks(meta?.deliverables);
+
+  const linkLabel = (url) => {
+    if (url.includes('github.com'))   return 'âŒ¥ GitHub';
+    if (url.includes('figma.com'))    return 'â—ˆ Figma';
+    if (url.includes('youtu'))        return 'â–¶ Video';
+    return 'â†— Link';
+  };
+
+  return (
+    <div
+      onClick={() => { window.location.hash = `#/bounty/${submission.bountyId}`; }}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        padding: '18px 20px',
+        background: hov ? theme.colors.bg.elevated : theme.colors.bg.card,
+        border: `1px solid ${hov ? theme.colors.border.default : theme.colors.border.subtle}`,
+        borderRadius: theme.radius.lg, cursor: 'pointer',
+        transition: theme.transition,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span style={{
+            display: 'inline-block', padding: '2px 8px',
+            background: theme.colors.green.dim, border: `1px solid ${theme.colors.green.border}`,
+            borderRadius: theme.radius.full, fontFamily: theme.fonts.mono,
+            fontSize: 9.5, color: theme.colors.green[400],
+            textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6,
+          }}>Approved</span>
+          <div style={{
+            fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 14,
+            color: theme.colors.text.primary, letterSpacing: '-0.02em',
+            overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+          }}>
+            {bountyTitle || `Bounty #${submission.bountyId}`}
+          </div>
+        </div>
+        {bountyReward != null && (
+          <div style={{
+            fontFamily: theme.fonts.mono, fontSize: 13, fontWeight: 600,
+            color: theme.colors.primary, flexShrink: 0,
+          }}>
+            {(Number(BigInt(bountyReward)) / 1e18).toFixed(4).replace(/\.?0+$/, '') || '0'} MON
+          </div>
+        )}
+      </div>
+
+      {desc && (
+        <p style={{
+          fontFamily: theme.fonts.body, fontSize: 12.5, color: theme.colors.text.muted,
+          lineHeight: 1.6, margin: '0 0 10px',
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        }}>{desc}</p>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {links.slice(0, 3).map((url, i) => (
+            <a key={i} href={url} target="_blank" rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              style={{
+                padding: '3px 10px',
+                background: theme.colors.bg.panel,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.full,
+                fontFamily: theme.fonts.body, fontSize: 11.5,
+                color: theme.colors.text.muted, textDecoration: 'none',
+                transition: theme.transition,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = theme.colors.primary; e.currentTarget.style.borderColor = theme.colors.primaryBorder; }}
+              onMouseLeave={e => { e.currentTarget.style.color = theme.colors.text.muted; e.currentTarget.style.borderColor = theme.colors.border.subtle; }}
+            >{linkLabel(url)}</a>
+          ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {submission.submittedAt && (
+            <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint }}>
+              {new Date(Number(submission.submittedAt) * 1000).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+            </span>
+          )}
+          <span style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.primary }}>View bounty â†’</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const IdentityModal  = lazy(() => import('../components/identity/IdentityModal'));
 const EditProfileModal = lazy(() => import('../components/profile/EditProfileModal'));
@@ -27,12 +146,17 @@ function formatMon(wei) {
 }
 
 const SUB_STATUS = { 0: 'pending', 1: 'approved', 2: 'rejected' };
+const BOUNTY_STATUS = { 0: 'active', 1: 'reviewing', 2: 'completed', 3: 'expired', 4: 'cancelled', 5: 'disputed' };
 function normSubStatus(s) {
   if (s == null) return 'pending';
   return SUB_STATUS[Number(s)] || String(s).toLowerCase();
 }
+function normBountyStatus(s) {
+  if (s == null) return 'active';
+  return BOUNTY_STATUS[Number(s)] || 'active';
+}
 
-// ── Skill pill ────────────────────────────────────────────────────────────────
+// â”€â”€ Skill pill â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SkillPill({ label }) {
   return (
     <span style={{
@@ -46,7 +170,7 @@ function SkillPill({ label }) {
   );
 }
 
-// ── Social link ───────────────────────────────────────────────────────────────
+// â”€â”€ Social link â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SocialLink({ icon: IconOrNode, href, label }) {
   return (
     <a
@@ -76,12 +200,183 @@ export default function ProfilePage() {
   const profileAddress = getAddressFromHash() || myAddress;
   const isSelf = myAddress && profileAddress?.toLowerCase() === myAddress?.toLowerCase();
 
-  const { builderStats, score, submissions = [], loading } = useProfile(profileAddress);
+  const { builderStats, score, submissions = [], bountyIds = [], loading } = useProfile(profileAddress);
   const { username, linkedWallets, reload: reloadIdentity } = useIdentity(profileAddress);
   const { meta, save: saveMeta } = useProfileMeta(profileAddress);
 
   const [identityOpen,    setIdentityOpen]    = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [activeTab,        setActiveTab]        = useState('submissions');
+  const [portfolioLoaded,  setPortfolioLoaded]  = useState(false);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [portfolioMeta,    setPortfolioMeta]    = useState({});
+  const [bountyData,       setBountyData]       = useState({});
+  const [submissionBounties, setSubmissionBounties] = useState({});
+  const [postedBounties, setPostedBounties] = useState([]);
+  const [postedLoading, setPostedLoading] = useState(false);
+  const [notifPermission,  setNotifPermission]  = useState(
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied'
+  );
+
+  const approvedSubs = submissions.filter(s => normSubStatus(s.status) === 'approved');
+
+  // Fetch bounty details for submissions tab
+  useEffect(() => {
+    if (!submissions?.length) return;
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const { contract: reg } = await getResolvedRegistryContract();
+        if (!reg) return;
+
+        const uniqueIds = [...new Set(submissions.map((s) => String(s.bountyId)))];
+        const rows = await Promise.all(uniqueIds.map((bid) => reg.getBounty(bid).catch(() => null)));
+        if (cancelled) return;
+
+        const map = {};
+        uniqueIds.forEach((id, i) => {
+          const b = rows[i];
+          map[id] = b ? { title: b.title, totalReward: b.totalReward } : null;
+        });
+        setSubmissionBounties(map);
+      } catch {
+        // non-fatal
+      }
+    };
+
+    void load();
+    return () => { cancelled = true; };
+  }, [(submissions ?? []).map(s => String(s.bountyId)).join(',')]);
+
+  // Fetch bounties posted by this profile
+  useEffect(() => {
+    if (!bountyIds?.length) {
+      setPostedBounties([]);
+      setPostedLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPostedLoading(true);
+
+    const load = async () => {
+      const fallbackRows = bountyIds.map((id) => ({ id: String(id), title: null, totalReward: null, status: null }));
+      try {
+        const { contract: reg } = await getResolvedRegistryContract();
+        if (!reg) {
+          if (!cancelled) setPostedBounties(fallbackRows);
+          return;
+        }
+
+        const rows = await Promise.all(bountyIds.map((id) => reg.getBounty(id).catch(() => null)));
+        if (cancelled) return;
+
+        setPostedBounties(bountyIds.map((id, i) => {
+          const b = rows[i];
+          return {
+            id: String(id),
+            title: b?.title || null,
+            totalReward: b?.totalReward ?? null,
+            status: b?.status != null ? Number(b.status) : null,
+          };
+        }));
+      } catch {
+        if (!cancelled) setPostedBounties(fallbackRows);
+      } finally {
+        if (!cancelled) setPostedLoading(false);
+      }
+    };
+
+    void load();
+    return () => { cancelled = true; };
+  }, [bountyIds?.join(',')]);
+
+
+  // Enrich posted bounty rows from indexer when registry detail is unavailable (legacy/migrated rows)
+  useEffect(() => {
+    if (!profileAddress || !postedBounties.length || !hasIndexer()) return;
+
+    const needsEnrich = postedBounties.some((b) => !b?.title || b?.totalReward == null || b?.status == null);
+    if (!needsEnrich) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      const raw = String(profileAddress);
+      const lower = raw.toLowerCase();
+
+      const dataLower = await querySubgraph(GQL_GET_CREATOR_BOUNTIES, { creator: lower }).catch(() => null);
+      let rows = dataLower?.bounties || [];
+
+      if (rows.length === 0 && raw !== lower) {
+        const dataRaw = await querySubgraph(GQL_GET_CREATOR_BOUNTIES, { creator: raw }).catch(() => null);
+        rows = dataRaw?.bounties || [];
+      }
+
+      if (cancelled || !rows.length) return;
+
+      const byId = Object.fromEntries(rows.map((r) => [String(r?.id), r]));
+
+      setPostedBounties((prev) => {
+        let changed = false;
+        const next = prev.map((b) => {
+          const row = byId[String(b.id)];
+          if (!row) return b;
+
+          const merged = {
+            ...b,
+            title: b.title || row.title || null,
+            totalReward: b.totalReward ?? row.totalReward ?? null,
+            status: b.status != null ? b.status : (row.status != null ? Number(row.status) : null),
+          };
+
+          if (merged.title !== b.title || merged.totalReward !== b.totalReward || merged.status !== b.status) {
+            changed = true;
+          }
+          return merged;
+        });
+
+        return changed ? next : prev;
+      });
+    };
+
+    void run();
+    return () => { cancelled = true; };
+  }, [profileAddress, postedBounties.map((b) => String(b.id) + ':' + (b.title ? '1' : '0') + ':' + (b.totalReward == null ? '0' : '1') + ':' + (b.status == null ? '0' : '1')).join('|')]);
+  const handleRequestNotifPermission = async () => {
+    if (!('Notification' in window)) return;
+    const result = await Notification.requestPermission();
+    setNotifPermission(result);
+  };
+
+  const handlePortfolioTabOpen = useCallback(async () => {
+    setActiveTab('portfolio');
+    if (portfolioLoaded || approvedSubs.length === 0) return;
+    setPortfolioLoading(true);
+    try {
+      const { contract: reg } = await getResolvedRegistryContract();
+      if (!reg) return;
+      const uniqueBountyIds = [...new Set(approvedSubs.map(s => String(s.bountyId)))];
+      await Promise.allSettled([
+        ...approvedSubs.map(s =>
+          s.metaCid
+            ? fetchJSON(s.metaCid).then(meta => {
+                if (meta) setPortfolioMeta(prev => ({ ...prev, [String(s.id)]: meta }));
+              }).catch(() => {})
+            : Promise.resolve()
+        ),
+        ...uniqueBountyIds.map(bid =>
+          reg.getBounty(bid).then(b => {
+            setBountyData(prev => ({ ...prev, [bid]: { title: b.title, reward: b.totalReward } }));
+          }).catch(() => {})
+        ),
+      ]);
+    } finally {
+      setPortfolioLoading(false);
+      setPortfolioLoaded(true);
+    }
+  }, [portfolioLoaded, approvedSubs]);
 
   const profile = builderStats ? {
     totalEarned:    formatMon(builderStats.totalEarned ?? builderStats[2]),
@@ -101,7 +396,7 @@ export default function ProfilePage() {
 
   if (loading) return <PageLoader />;
 
-  const shortAddr = `${profileAddress.slice(0, 6)}…${profileAddress.slice(-4)}`;
+  const shortAddr = `${profileAddress.slice(0, 6)}â€¦${profileAddress.slice(-4)}`;
   const displayName = meta?.displayName || username ? (meta?.displayName || `@${username}`) : shortAddr;
   const avatarSrc   = getAvatarSrc(profileAddress);
 
@@ -109,11 +404,11 @@ export default function ProfilePage() {
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 'clamp(32px,5vw,64px) clamp(16px,4vw,48px)' }}>
       {/* Page title */}
       <div style={{ marginBottom: 28 }}>
-        <div className="page-eyebrow">{isSelf ? 'My Account' : 'Builder Profile'}</div>
-        <h1 className="page-title">{isSelf ? 'Account' : shortAddr}</h1>
+        <div className="page-eyebrow">{isSelf ? 'My Account' : 'Profile'}</div>
+        <h1 className="page-title">{isSelf ? 'Account' : (username ? `@${username}` : displayName)}</h1>
       </div>
 
-      {/* ── Profile header card ── */}
+      {/* â”€â”€ Profile header card â”€â”€ */}
       <div style={{
         padding: '24px 28px', marginBottom: 24,
         background: theme.colors.bg.card,
@@ -132,15 +427,12 @@ export default function ProfilePage() {
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Name row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
-              <h1 style={{
-                fontFamily: theme.fonts.body, fontWeight: 800, fontSize: 22,
-                letterSpacing: '-0.04em', color: theme.colors.text.primary,
+              <h2 style={{
+                fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 20,
+                letterSpacing: '-0.03em', color: theme.colors.text.primary,
               }}>
-                {meta?.displayName
-                  ? meta.displayName
-                  : username ? `@${username}` : shortAddr
-                }
-              </h1>
+                {meta?.displayName || (username ? `@${username}` : null) || shortAddr}
+              </h2>
               {isSelf && <Badge type="other" label="You" />}
               {username && (
                 <span style={{
@@ -150,13 +442,13 @@ export default function ProfilePage() {
                   border: `1px solid ${theme.colors.green.border}`,
                   borderRadius: theme.radius.full,
                   padding: '2px 8px', letterSpacing: '0.04em',
-                }}>on-chain ID</span>
+                }}>on-chain</span>
               )}
             </div>
 
-            {/* Address / username sub-label */}
+            {/* Address â€” shown once, compact */}
             <div style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.faint, letterSpacing: '0.02em', marginBottom: 6 }}>
-              {meta?.displayName ? (username ? `@${username} · ` : '') + shortAddr : (username ? shortAddr : profileAddress)}
+              {shortAddr}
             </div>
 
             {/* Bio */}
@@ -207,7 +499,7 @@ export default function ProfilePage() {
                 color: theme.colors.primaryLight,
               }}>
                 <IconBounties size={14} color={theme.colors.primary} style={{ flexShrink: 0 }} />
-                <span>Complete your profile — add a bio and claim your username</span>
+                <span>Complete your profile â€” add a bio and claim your username</span>
               </div>
             )}
           </div>
@@ -237,7 +529,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* ── Bottom bar: identity status + action buttons ── */}
+        {/* â”€â”€ Bottom bar: identity status + action buttons â”€â”€ */}
         {isSelf && (
           <div style={{ marginTop: 20, paddingTop: 18, borderTop: `1px solid ${theme.colors.border.faint}` }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
@@ -257,7 +549,7 @@ export default function ProfilePage() {
                   <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Backup</span>
                   {linkedWallets.length > 0 ? (
                     <span style={{ fontFamily: theme.fonts.mono, fontSize: 11, fontWeight: 600, color: theme.colors.green[400], background: theme.colors.green.dim, border: `1px solid ${theme.colors.green.border}`, borderRadius: theme.radius.full, padding: '2px 10px' }}>
-                      {`${linkedWallets[0].slice(0, 6)}…${linkedWallets[0].slice(-4)}`}
+                      {`${linkedWallets[0].slice(0, 6)}â€¦${linkedWallets[0].slice(-4)}`}
                     </span>
                   ) : (
                     <span style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.faint, background: theme.colors.bg.elevated, border: `1px solid ${theme.colors.border.subtle}`, borderRadius: theme.radius.full, padding: '2px 10px' }}>None</span>
@@ -266,7 +558,25 @@ export default function ProfilePage() {
               </div>
 
               {/* Action buttons */}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {notifPermission === 'default' && (
+                  <button
+                    onClick={handleRequestNotifPermission}
+                    title="Get browser notifications when you receive submissions, payments, or approvals"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '8px 14px',
+                      background: theme.colors.bg.elevated,
+                      border: `1px solid ${theme.colors.border.default}`,
+                      borderRadius: theme.radius.md,
+                      fontFamily: theme.fonts.body, fontSize: 12, fontWeight: 500,
+                      color: theme.colors.text.muted, cursor: 'pointer',
+                      transition: theme.transition,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = theme.colors.primaryLight; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.color = theme.colors.text.muted; }}
+                  >ðŸ”” Enable Notifications</button>
+                )}
                 <button
                   onClick={() => setEditProfileOpen(true)}
                   style={{
@@ -308,7 +618,7 @@ export default function ProfilePage() {
         )}
       </div>
 
-      {/* ── Modals ── */}
+      {/* â”€â”€ Modals â”€â”€ */}
       {isSelf && (
         <Suspense fallback={null}>
           <EditProfileModal
@@ -326,50 +636,157 @@ export default function ProfilePage() {
         </Suspense>
       )}
 
-      {/* ── Submission history ── */}
+      {/* â”€â”€ Tabs â”€â”€ */}
       <div>
-        <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 17, letterSpacing: '-0.025em', color: theme.colors.text.primary, marginBottom: 20 }}>
-          Submission History
-        </h2>
+        {/* Tab headers */}
+        <div style={{ display: 'flex', gap: 0, borderBottom: `1px solid ${theme.colors.border.subtle}`, marginBottom: 24 }}>
+          {[
+            { id: 'posted',      label: 'Posted',      count: Math.max(postedBounties.length, bountyIds.length) },
+            { id: 'submissions', label: 'Submissions', count: submissions.length },
+            { id: 'portfolio',   label: 'Portfolio',   count: approvedSubs.length },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => tab.id === 'portfolio' ? handlePortfolioTabOpen() : setActiveTab(tab.id)}
+              style={{
+                padding: '10px 18px', background: 'none',
+                border: 'none', borderBottom: `2px solid ${activeTab === tab.id ? theme.colors.primary : 'transparent'}`,
+                fontFamily: theme.fonts.body, fontSize: 14, fontWeight: activeTab === tab.id ? 600 : 400,
+                color: activeTab === tab.id ? theme.colors.primary : theme.colors.text.muted,
+                cursor: 'pointer', transition: theme.transition, display: 'flex', alignItems: 'center', gap: 7,
+                marginBottom: -1,
+              }}
+            >
+              {tab.label}
+              {tab.count > 0 && (
+                <span style={{
+                  padding: '1px 7px',
+                  background: activeTab === tab.id ? theme.colors.primaryDim : theme.colors.bg.elevated,
+                  border: `1px solid ${activeTab === tab.id ? theme.colors.primaryBorder : theme.colors.border.subtle}`,
+                  borderRadius: theme.radius.full,
+                  fontFamily: theme.fonts.mono, fontSize: 10,
+                  color: activeTab === tab.id ? theme.colors.primary : theme.colors.text.faint,
+                }}>{tab.count}</span>
+              )}
+            </button>
+          ))}
+        </div>
 
-        {submissions.length === 0 ? (
-          <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No submissions yet" message={isSelf ? 'Start submitting work to bounties to build your history.' : 'This builder has not submitted any work yet.'} />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {submissions.map(s => (
-              <div
-                key={s.id}
-                onClick={() => { window.location.hash = `#/bounty/${s.bountyId}`; }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px',
-                  background: theme.colors.bg.card, border: `1px solid ${theme.colors.border.subtle}`,
-                  borderRadius: theme.radius.md, cursor: 'pointer', transition: theme.transition,
-                  flexWrap: 'wrap',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.background = theme.colors.bg.elevated; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
-              >
-                <Badge type={normSubStatus(s.status)} />
-                <span style={{ flex: 1, fontFamily: theme.fonts.body, fontWeight: 500, fontSize: 13.5, color: theme.colors.text.primary, letterSpacing: '-0.01em', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {s.bountyTitle || `Bounty #${s.bountyId}`}
-                </span>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexShrink: 0 }}>
-                  {s.reward && (
-                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 13, fontWeight: 500, color: normSubStatus(s.status) === 'approved' ? theme.colors.primary : theme.colors.text.muted }}>
-                      {normSubStatus(s.status) === 'approved' ? '+' : ''}{s.reward} MON
-                    </span>
-                  )}
-                  {s.submittedAt && (
-                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint }}>
-                      {new Date(Number(s.submittedAt) * 1000).toLocaleDateString()}
+        {/* Posted tab */}
+        {activeTab === 'posted' && (
+          postedLoading && postedBounties.length === 0 ? (
+            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading posted bounties…</div>
+          ) : postedBounties.length === 0 ? (
+            <EmptyState
+              icon={<IconBounties size={32} color={theme.colors.text.faint} />}
+              title="No bounties posted yet"
+              message={isSelf ? 'Post your first bounty to start receiving submissions.' : 'This creator has not posted any bounties yet.'}
+              action={isSelf ? (() => { window.location.hash = '#/post'; }) : undefined}
+              actionLabel={isSelf ? 'Post a Bounty' : undefined}
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {postedBounties.map((b) => (
+                <div
+                  key={String(b.id)}
+                  onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px',
+                    background: theme.colors.bg.card, border: `1px solid ${theme.colors.border.subtle}`,
+                    borderRadius: theme.radius.md, cursor: 'pointer', transition: theme.transition,
+                    flexWrap: 'wrap',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.background = theme.colors.bg.elevated; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
+                >
+                  <Badge type={normBountyStatus(b.status)} />
+                  <span style={{ flex: 1, minWidth: 0, fontFamily: theme.fonts.body, fontWeight: 500, fontSize: 13.5, color: theme.colors.text.primary, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {b.title || `Bounty #${b.id}`}
+                  </span>
+                  {b.totalReward != null && (
+                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 12, fontWeight: 600, color: theme.colors.primary }}>
+                      {formatMon(b.totalReward)} MON
                     </span>
                   )}
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )
+        )}
+        {/* Submissions tab */}
+        {activeTab === 'submissions' && (
+          submissions.length === 0 ? (
+            <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No submissions yet" message={isSelf ? 'Start submitting work to bounties to build your history.' : 'This builder has not submitted any work yet.'} />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {submissions.map(s => {
+                const bountyInfo = submissionBounties[String(s.bountyId)];
+                const bountyTitle = bountyInfo?.title || s.bountyTitle || `Bounty #${s.bountyId}`;
+                const isApproved = normSubStatus(s.status) === 'approved';
+                const reward = bountyInfo?.totalReward ?? s.reward;
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => { window.location.hash = `#/bounty/${s.bountyId}`; }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px',
+                      background: theme.colors.bg.card, border: `1px solid ${theme.colors.border.subtle}`,
+                      borderRadius: theme.radius.md, cursor: 'pointer', transition: theme.transition,
+                      flexWrap: 'wrap',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.background = theme.colors.bg.elevated; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.card; }}
+                  >
+                    <Badge type={normSubStatus(s.status)} />
+                    <span style={{ flex: 1, fontFamily: theme.fonts.body, fontWeight: 500, fontSize: 13.5, color: theme.colors.text.primary, letterSpacing: '-0.01em', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {bountyTitle}
+                    </span>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexShrink: 0 }}>
+                      {isApproved && reward != null && (
+                        <span style={{ fontFamily: theme.fonts.mono, fontSize: 12, fontWeight: 600, color: theme.colors.green[400] }}>
+                          +{typeof reward === 'bigint' || typeof reward === 'number' ? formatMon(reward) : reward} MON
+                        </span>
+                      )}
+                      {s.submittedAt && (
+                        <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint }}>
+                          {new Date(Number(s.submittedAt) * 1000).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+
+        {/* Portfolio tab */}
+        {activeTab === 'portfolio' && (
+          portfolioLoading ? (
+            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading portfolioâ€¦</div>
+          ) : approvedSubs.length === 0 ? (
+            <EmptyState
+              icon={<IconTarget size={32} color={theme.colors.text.faint} />}
+              title="No portfolio yet"
+              message={isSelf ? 'Win a bounty to showcase your work here.' : 'This builder has not completed any bounties yet.'}
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {approvedSubs.map(s => (
+                <PortfolioCard
+                  key={s.id}
+                  submission={s}
+                  meta={portfolioMeta[String(s.id)]}
+                  bountyTitle={bountyData[String(s.bountyId)]?.title}
+                  bountyReward={bountyData[String(s.bountyId)]?.reward}
+                />
+              ))}
+            </div>
+          )
         )}
       </div>
     </div>
   );
 }
+
+

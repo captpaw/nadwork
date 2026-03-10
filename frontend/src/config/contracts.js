@@ -11,7 +11,7 @@ export const ADDRESSES = {
 
 // V4: V3 + Application System (Path B) + 1-tier identity + revised MON-only stakes
 export const FACTORY_ABI = [
-  // createBounty — V4: added requiresApplication (last param, bool)
+  // createBounty - V4 only
   'function createBounty(string,string,string,uint8,address,uint256,uint8,uint8[],uint256,bool) payable returns (uint256)',
   // submitWork — V4: msg.value = submissionStake (no tier multiplier)
   'function submitWork(uint256,string) payable returns (uint256)',
@@ -198,3 +198,6 @@ export const MIN_SUBMISSION_STAKE_MON      = 0.005;  // 0.005 MON minimum
 export const MAX_SUBMISSION_STAKE_MON      = 5;      // 5 MON cap
 export const MIN_REVIEW_WINDOW_SECS        = 86400;  // 24h
 export const GRACE_PERIOD_REJECT_SECS      = 7200;   // 2h
+
+
+

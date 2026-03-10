@@ -4,11 +4,16 @@ import BountyCard from '../components/bounty/BountyCard';
 import { PageLoader } from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import { useBounties } from '../hooks/useBounties';
+import { NETWORK_LABEL } from '../config/network.js';
 import { IconArrowDown, IconTarget, IconClock, IconGrid, IconList, IconX, IconWarning, IconBounties } from '../components/icons';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const CATEGORIES = ['All', 'Dev', 'Design', 'Content', 'Research', 'Other'];
-const STATUSES   = ['All', 'Active', 'Reviewing', 'Completed', 'Expired'];
+const CATEGORIES  = ['All', 'Dev', 'Design', 'Content', 'Research', 'Other'];
+const STATUSES    = ['All', 'Active', 'Reviewing', 'Completed', 'Expired'];
+const TOP_SKILLS  = [
+  'Solidity', 'React', 'TypeScript', 'UI/UX', 'Smart Contract',
+  'DeFi', 'Figma', 'Python', 'Rust', 'Technical Writing',
+];
 
 const SORTS = [
   { key: 'newest', label: 'Newest',         Icon: IconArrowDown },
@@ -117,7 +122,7 @@ function ViewToggle({ view, onChange }) {
 }
 
 // ── Sidebar filter panel ──────────────────────────────────────────────────────
-function SidebarFilters({ filters, onChange, counts }) {
+function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillToggle, onClearSkills }) {
   const { category = 'All', status = 'All' } = filters;
   const update = (key, val) => onChange({ ...filters, [key]: val });
 
@@ -168,6 +173,42 @@ function SidebarFilters({ filters, onChange, counts }) {
         </div>
       </div>
 
+      {/* Skills */}
+      <div>
+        <div style={{
+          fontFamily: theme.fonts.mono, fontSize: 10, letterSpacing: '0.1em',
+          textTransform: 'uppercase', color: theme.colors.text.faint,
+          marginBottom: 10,
+        }}>Skills</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {TOP_SKILLS.map(s => (
+            <FilterPill
+              key={s}
+              label={s}
+              active={selectedSkills.includes(s)}
+              color={theme.colors.cyan}
+              onClick={() => onSkillToggle(s)}
+            />
+          ))}
+        </div>
+        {selectedSkills.length > 0 && (
+          <button
+            onClick={onClearSkills}
+            style={{
+              marginTop: 8, width: '100%', padding: '5px 10px',
+              background: 'transparent',
+              border: `1px dashed ${theme.colors.border.subtle}`,
+              borderRadius: theme.radius.md,
+              fontFamily: theme.fonts.body, fontSize: 11,
+              color: theme.colors.text.faint, cursor: 'pointer',
+              transition: theme.transition,
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = theme.colors.text.secondary}
+            onMouseLeave={e => e.currentTarget.style.color = theme.colors.text.faint}
+          >Clear skills</button>
+        )}
+      </div>
+
       {/* Quick stats */}
       {counts && (
         <div style={{
@@ -201,11 +242,19 @@ export default function BountiesPage() {
   const [filters, setFilters] = useState({
     search: '', category: 'All', status: 'All', sort: 'newest',
   });
+  const [selectedSkills, setSelectedSkills] = useState([]);
   const [view, setView]   = useState('grid');
   const [mounted, setMounted] = useState(false);
   const searchRef = useRef(null);
 
-  useEffect(() => { setTimeout(() => setMounted(true), 40); }, []);
+  const toggleSkill = (s) => setSelectedSkills(prev =>
+    prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]
+  );
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMounted(true), 40);
+    return () => clearTimeout(timer);
+  }, []);
 
   const normalizedFilters = {
     search:   filters.search,
@@ -214,7 +263,7 @@ export default function BountiesPage() {
     sort:     SORT_MAP[filters.sort] || 'newest',
   };
 
-  const { bounties = [], total: totalFromHook, loading, error } = useBounties(normalizedFilters);
+  const { bounties = [], total: totalFromHook, loading, error } = useBounties({ ...normalizedFilters, skills: selectedSkills });
 
   // Derive sidebar counts from data already fetched — no second hook call
   const sidebarCounts = {
@@ -223,8 +272,8 @@ export default function BountiesPage() {
     completed: bounties.filter(b => Number(b.status) === 2).length,
   };
 
-  const hasActiveFilters = filters.category !== 'All' || filters.status !== 'All' || filters.search;
-  const resetFilters = () => setFilters({ search: '', category: 'All', status: 'All', sort: filters.sort });
+  const hasActiveFilters = filters.category !== 'All' || filters.status !== 'All' || filters.search || selectedSkills.length > 0;
+  const resetFilters = () => { setFilters({ search: '', category: 'All', status: 'All', sort: filters.sort }); setSelectedSkills([]); };
 
   return (
     <div style={{
@@ -240,7 +289,7 @@ export default function BountiesPage() {
           flexWrap: 'wrap', gap: 16,
         }}>
           <div>
-            <div className="page-eyebrow">On-chain · Monad Testnet</div>
+            <div className="page-eyebrow">On-chain · {NETWORK_LABEL}</div>
             <h1 className="page-title" style={{ marginBottom: 8 }}>Bounties</h1>
             <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, maxWidth: 400 }}>
               Pick a task, deliver the work, get paid in MON — on-chain, trustless.
@@ -338,6 +387,9 @@ export default function BountiesPage() {
             filters={filters}
             onChange={setFilters}
             counts={sidebarCounts}
+            selectedSkills={selectedSkills}
+            onSkillToggle={toggleSkill}
+            onClearSkills={() => setSelectedSkills([])}
           />
         </div>
 
@@ -409,6 +461,14 @@ export default function BountiesPage() {
                   onRemove={() => setFilters(f => ({ ...f, search: '' }))}
                 />
               )}
+              {selectedSkills.map(s => (
+                <ActiveChip
+                  key={s}
+                  label={s}
+                  color={theme.colors.cyan}
+                  onRemove={() => toggleSkill(s)}
+                />
+              ))}
             </div>
           )}
 
@@ -419,7 +479,7 @@ export default function BountiesPage() {
             <EmptyState
               icon={<IconWarning size={32} color={theme.colors.amber} />}
               title="Failed to load bounties"
-              message="Could not fetch from the contract. Please try again."
+              message={error || 'Could not fetch from the contract. Please try again.'}
               action={() => window.location.reload()}
               actionLabel="Retry"
             />
@@ -439,7 +499,7 @@ export default function BountiesPage() {
             }}>
               {bounties.map(b => (
                 <BountyCard
-                  key={b.id} bounty={b} view="grid"
+                  key={String(b.id)} bounty={b} view="grid"
                   onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
                 />
               ))}
@@ -469,7 +529,7 @@ export default function BountiesPage() {
 
               {bounties.map((b, i) => (
                 <ListRow
-                  key={b.id}
+                  key={String(b.id)}
                   bounty={b}
                   last={i === bounties.length - 1}
                   onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
@@ -522,7 +582,7 @@ function ActiveChip({ label, onRemove, color }) {
 function ListRow({ bounty, last, onClick }) {
   const [hov, setHov] = useState(false);
 
-  const title    = bounty?.title || 'Untitled Bounty';
+  const title    = bounty?.title || (bounty?.id != null ? `Bounty #${bounty.id}` : 'Untitled Bounty');
   const category = (bounty?.category || 'other').toLowerCase();
   const rawReward = bounty?.totalReward;
   const reward   = bounty?.reward || bounty?.rewardAmount
@@ -633,3 +693,4 @@ function ListRow({ bounty, last, onClick }) {
     </div>
   );
 }
+

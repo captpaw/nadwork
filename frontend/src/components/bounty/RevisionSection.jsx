@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { theme as t } from '../../styles/theme.js';
 import { fetchJSON } from '../../config/pinata.js';
 import { IconExternalLink, IconEdit } from '../../components/icons';
-import { getRevisionLink, saveRevisionLink } from './RequestRevisionModal.jsx';
+import { getRevisionRequests, getRevisionResponses, getRevisionLink, saveRevisionLink } from './RequestRevisionModal.jsx';
 
 function SafeLink({ href, children, ...props }) {
   const isSafe = href && (href.startsWith('https://') || href.startsWith('http://') || href.startsWith('#') || href.startsWith('ipfs://'));
@@ -43,18 +43,27 @@ export default function RevisionSection({
   onRevisionResponseIpfsChange,
   onRequestRevisionOpen,
   onUploadRevisionOpen,
+  revisionRefresh = 0,
 }) {
-  const [requestData, setRequestData] = useState(null);
-  const [responseData, setResponseData] = useState(null);
-  const [loadingReq, setLoadingReq] = useState(false);
-  const [loadingRes, setLoadingRes] = useState(false);
+  const [requestDatas, setRequestDatas] = useState([]);
+  const [responseDatas, setResponseDatas] = useState([]);
+  const [loadingReqs, setLoadingReqs] = useState(false);
+  const [loadingRess, setLoadingRess] = useState(false);
   const [pasteReq, setPasteReq] = useState('');
   const [pasteRes, setPasteRes] = useState('');
-  const [localReqHash, setLocalReqHash] = useState('');
-  const [localResHash, setLocalResHash] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const reqHash = revisionRequestIpfs || localReqHash || getRevisionLink(bountyId, submissionId, 'request');
-  const resHash = revisionResponseIpfs || localResHash || getRevisionLink(bountyId, submissionId, 'response');
+  const reqHashes = React.useMemo(() => {
+    const fromStorage = getRevisionRequests(bountyId, submissionId);
+    if (revisionRequestIpfs && !fromStorage.includes(revisionRequestIpfs)) return [...fromStorage, revisionRequestIpfs];
+    return fromStorage;
+  }, [bountyId, submissionId, revisionRequestIpfs, refreshKey, revisionRefresh]);
+  const resHashes = React.useMemo(() => {
+    const fromStorage = getRevisionResponses(bountyId, submissionId);
+    if (revisionResponseIpfs && !fromStorage.includes(revisionResponseIpfs)) return [...fromStorage, revisionResponseIpfs];
+    return fromStorage;
+  }, [bountyId, submissionId, revisionResponseIpfs, refreshKey, revisionRefresh]);
+  const reqHash = reqHashes.length > 0 ? reqHashes[reqHashes.length - 1] : '';
 
   // Load from URL params on mount (e.g. when builder opens shared link)
   useEffect(() => {
@@ -67,39 +76,34 @@ export default function RevisionSection({
     if (urlSubId !== String(submissionId)) return;
     const req = params.get('revisionRequest');
     const res = params.get('revisionResponse');
-    if (req) {
-      saveRevisionLink(bountyId, submissionId, 'request', req);
-      setLocalReqHash(req);
-    }
-    if (res) {
-      saveRevisionLink(bountyId, submissionId, 'response', res);
-      setLocalResHash(res);
-    }
+    if (req) saveRevisionLink(bountyId, submissionId, 'request', req);
+    if (res) saveRevisionLink(bountyId, submissionId, 'response', res);
+    if (req || res) setRefreshKey(k => k + 1);
   }, [bountyId, submissionId]);
 
+  // Load all revision requests
   useEffect(() => {
-    if (!reqHash) {
-      setRequestData(null);
+    if (!reqHashes.length) {
+      setRequestDatas([]);
       return;
     }
-    setLoadingReq(true);
-    fetchJSON(reqHash)
-      .then(d => setRequestData(d))
-      .catch(() => setRequestData(null))
-      .finally(() => setLoadingReq(false));
-  }, [reqHash]);
+    setLoadingReqs(true);
+    Promise.all(reqHashes.map(h => fetchJSON(h).catch(() => null)))
+      .then(results => setRequestDatas(results))
+      .finally(() => setLoadingReqs(false));
+  }, [reqHashes.join(',')]);
 
+  // Load all revision responses
   useEffect(() => {
-    if (!resHash) {
-      setResponseData(null);
+    if (!resHashes.length) {
+      setResponseDatas([]);
       return;
     }
-    setLoadingRes(true);
-    fetchJSON(resHash)
-      .then(d => setResponseData(d))
-      .catch(() => setResponseData(null))
-      .finally(() => setLoadingRes(false));
-  }, [resHash]);
+    setLoadingRess(true);
+    Promise.all(resHashes.map(h => fetchJSON(h).catch(() => null)))
+      .then(results => setResponseDatas(results))
+      .finally(() => setLoadingRess(false));
+  }, [resHashes.join(',')]);
 
   function extractIpfsHash(input) {
     const s = input.trim();
@@ -124,8 +128,8 @@ export default function RevisionSection({
     const hash = extractIpfsHash(pasteReq);
     if (!hash) return;
     saveRevisionLink(bountyId, submissionId, 'request', hash);
-    setLocalReqHash(hash);
     setPasteReq('');
+    setRefreshKey(k => k + 1);
     onRevisionRequestIpfsChange?.(hash);
   };
 
@@ -133,8 +137,8 @@ export default function RevisionSection({
     const hash = extractIpfsHash(pasteRes);
     if (!hash) return;
     saveRevisionLink(bountyId, submissionId, 'response', hash);
-    setLocalResHash(hash);
     setPasteRes('');
+    setRefreshKey(k => k + 1);
     onRevisionResponseIpfsChange?.(hash);
   };
 
@@ -169,7 +173,7 @@ export default function RevisionSection({
       )}
 
       {/* Builder: Paste revision request */}
-      {isBuilder && !reqHash && (
+      {isBuilder && reqHashes.length === 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11.5, color: t.colors.text.muted, marginBottom: 6 }}>
             Creator sent a revision request? Paste the link:
@@ -212,29 +216,32 @@ export default function RevisionSection({
         </div>
       )}
 
-      {/* Display revision request */}
-      {reqHash && (
-        <div style={{ marginBottom: 14, padding: 12, background: t.colors.bg.elevated, border: `1px solid ${t.colors.border.subtle}`, borderRadius: t.radius.md }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: t.colors.amber, marginBottom: 8 }}>Revision request</div>
-          {loadingReq && <div style={{ fontSize: 12, color: t.colors.text.muted }}>Loading…</div>}
-          {!loadingReq && requestData && (
-            <div>
-              {requestData.message && (
-                <div style={{ fontSize: 13, color: t.colors.text.secondary, lineHeight: 1.6, marginBottom: 8 }}>
-                  <ReactMarkdown components={{ a: SafeLink }}>{requestData.message}</ReactMarkdown>
+      {/* Display all revision requests */}
+      {reqHashes.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: t.colors.amber, marginBottom: 8, letterSpacing: '0.05em' }}>Revision requests ({reqHashes.length})</div>
+          {loadingReqs && <div style={{ fontSize: 12, color: t.colors.text.muted, padding: 8 }}>Loading…</div>}
+          {!loadingReqs && requestDatas.map((requestData, idx) => (
+            <div key={idx} style={{ marginBottom: idx < requestDatas.length - 1 ? 12 : 0, padding: 12, background: t.colors.bg.elevated, border: `1px solid ${t.colors.border.subtle}`, borderRadius: t.radius.md }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: t.colors.text.muted, marginBottom: 8 }}>Request #{idx + 1}</div>
+              {requestData ? (
+                <div>
+                  {requestData.message && (
+                    <div style={{ fontSize: 13, color: t.colors.text.secondary, lineHeight: 1.6, marginBottom: 8 }}>
+                      <ReactMarkdown components={{ a: SafeLink }}>{requestData.message}</ReactMarkdown>
+                    </div>
+                  )}
+                  {requestData.refLink && (
+                    <a href={requestData.refLink} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: t.colors.primary }}>Reference ↗</a>
+                  )}
                 </div>
-              )}
-              {requestData.refLink && (
-                <a href={requestData.refLink} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: t.colors.primary }}>
-                  Reference ↗
-                </a>
+              ) : (
+                <div style={{ fontSize: 12, color: t.colors.text.muted }}>Could not load.</div>
               )}
             </div>
-          )}
-          {!loadingReq && !requestData && <div style={{ fontSize: 12, color: t.colors.text.muted }}>Could not load.</div>}
-
-          {/* Builder: Upload Revision button when request is loaded */}
-          {isBuilder && requestData && (
+          ))}
+          {/* Builder: Upload Revision button when at least one request is loaded */}
+          {isBuilder && requestDatas.some(Boolean) && (
             <div style={{ marginTop: 12 }}>
               <button
                 onClick={onUploadRevisionOpen}
@@ -258,7 +265,7 @@ export default function RevisionSection({
       )}
 
       {/* Creator: Paste revision response */}
-      {isCreator && reqHash && !resHash && (
+      {isCreator && reqHashes.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11.5, color: t.colors.text.muted, marginBottom: 6 }}>
             Builder sent a revision? Paste the link:
@@ -301,35 +308,41 @@ export default function RevisionSection({
         </div>
       )}
 
-      {/* Display revision response */}
-      {resHash && (
-        <div style={{ padding: 12, background: t.colors.bg.elevated, border: `1px solid ${t.colors.border.subtle}`, borderRadius: t.radius.md }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: t.colors.green[400], marginBottom: 8 }}>Revision response</div>
-          {loadingRes && <div style={{ fontSize: 12, color: t.colors.text.muted }}>Loading…</div>}
-          {!loadingRes && responseData && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {responseData.title && (
-                <div style={{ fontSize: 14, fontWeight: 600, color: t.colors.text.primary }}>{responseData.title}</div>
-              )}
-              {responseData.description && (
-                <div style={{ fontSize: 13, color: t.colors.text.secondary, lineHeight: 1.6 }}>
-                  <ReactMarkdown components={{ a: SafeLink }}>{responseData.description}</ReactMarkdown>
+      {/* Display all revision responses */}
+      {resHashes.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: t.colors.green[400], marginBottom: 8, letterSpacing: '0.05em' }}>Revision responses ({resHashes.length})</div>
+          {loadingRess && <div style={{ fontSize: 12, color: t.colors.text.muted, padding: 8 }}>Loading…</div>}
+          {!loadingRess && responseDatas.map((responseData, idx) => (
+            <div key={idx} style={{ marginBottom: idx < responseDatas.length - 1 ? 12 : 0, padding: 12, background: t.colors.bg.elevated, border: `1px solid ${t.colors.border.subtle}`, borderRadius: t.radius.md }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: t.colors.text.muted, marginBottom: 8 }}>Response #{idx + 1}</div>
+              {responseData ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {responseData.title && (
+                    <div style={{ fontSize: 14, fontWeight: 600, color: t.colors.text.primary }}>{responseData.title}</div>
+                  )}
+                  {responseData.description && (
+                    <div style={{ fontSize: 13, color: t.colors.text.secondary, lineHeight: 1.6 }}>
+                      <ReactMarkdown components={{ a: SafeLink }}>{responseData.description}</ReactMarkdown>
+                    </div>
+                  )}
+                  {responseData.deliverables && responseData.deliverables.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <SLabel>Deliverables</SLabel>
+                      {responseData.deliverables.map((d, i) => (
+                        <DeliverableLink key={i} item={d} />
+                      ))}
+                    </div>
+                  )}
+                  {responseData.notes && (
+                    <div style={{ fontSize: 12, color: t.colors.text.muted, fontStyle: 'italic' }}>{responseData.notes}</div>
+                  )}
                 </div>
-              )}
-              {responseData.deliverables && responseData.deliverables.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <SLabel>Deliverables</SLabel>
-                  {responseData.deliverables.map((d, i) => (
-                    <DeliverableLink key={i} item={d} />
-                  ))}
-                </div>
-              )}
-              {responseData.notes && (
-                <div style={{ fontSize: 12, color: t.colors.text.muted, fontStyle: 'italic' }}>{responseData.notes}</div>
+              ) : (
+                <div style={{ fontSize: 12, color: t.colors.text.muted }}>Could not load.</div>
               )}
             </div>
-          )}
-          {!loadingRes && !responseData && <div style={{ fontSize: 12, color: t.colors.text.muted }}>Could not load.</div>}
+          ))}
         </div>
       )}
     </div>

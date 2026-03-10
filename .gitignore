@@ -123,3 +123,6 @@ gitleaks-report.json
 trufflehog-report.json
 semgrep-report.json
 snyk-report.json
+
+.tools/
+output/

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { getReadContract } from '@/utils/ethers.js';
-import { ADDRESSES, REGISTRY_ABI, REPUTATION_ABI } from '@/config/contracts.js';
+import { getReadContractWithFallback } from '@/utils/ethers.js';
+import { getResolvedRegistryContract } from '@/utils/registry.js';
+import { ADDRESSES, REPUTATION_ABI } from '@/config/contracts.js';
 import { ethers } from 'ethers';
+import { hasIndexer, querySubgraph, GQL_GET_LEADERBOARD } from './useIndexer.js';
 
 // FIX H-FE-4: Bound cache size and use per-instance flag (not module-level mutable ref)
 // Cache is limited to a single TTL window; it is not shared across HMR reloads because
@@ -51,7 +53,7 @@ export function useLeaderboard() {
     aliveRef.current = true;
 
     const load = async () => {
-      if (!ADDRESSES.registry || !ADDRESSES.reputation) { setLoading(false); return; }
+      if ((!ADDRESSES.registry && !ADDRESSES.factory) || !ADDRESSES.reputation) { setLoading(false); return; }
 
       // Use cache if fresh
       if (_builderCache && _creatorCache && Date.now() - _cacheTs < CACHE_TTL) {
@@ -61,8 +63,38 @@ export function useLeaderboard() {
 
       try {
         if (aliveRef.current) setLoading(true);
-        const reg = getReadContract(ADDRESSES.registry,   REGISTRY_ABI);
-        const rep = getReadContract(ADDRESSES.reputation, REPUTATION_ABI);
+
+        // ── Indexer fast-path ─────────────────────────────────────────────────
+        if (hasIndexer()) {
+          const data = await querySubgraph(GQL_GET_LEADERBOARD, { first: 20 });
+          const indexedRows = data?.builderStats_collection;
+          if (indexedRows?.length) {
+            const rows = indexedRows.map(b => ({
+              address:    b.address.toLowerCase(),
+              score:      b.winCount * 100,  // approximate until reputation subgraph is added
+              winCount:   b.winCount,
+              subCount:   b.submissionCount,
+              totalEarned: BigInt(b.totalEarned || '0'),
+              winRate:    b.submissionCount > 0 ? Math.round((b.winCount / b.submissionCount) * 100) : 0,
+            }));
+            rows.sort((a, b) => b.totalEarned > a.totalEarned ? 1 : -1);
+            _builderCache = rows; _creatorCache = []; _cacheTs = Date.now();
+            if (aliveRef.current) { setBuilders(rows); setCreators([]); setLoading(false); }
+            return;
+          }
+          if (data && aliveRef.current && import.meta.env.DEV) {
+            console.warn('[useLeaderboard] Subgraph returned no builder stats yet, falling back to RPC');
+          }
+          // null = subgraph error → fall through to RPC
+        }
+
+        // ── RPC path (fallback when indexer empty/error) ────────────────────
+        const { contract: reg } = await getResolvedRegistryContract();
+        if (!reg) {
+          if (aliveRef.current) setLoading(false);
+          return;
+        }
+        const rep = await getReadContractWithFallback(ADDRESSES.reputation, REPUTATION_ABI);
 
         const { creators: creatorAddrs, builders: winnerAddrs } = await scrapeActiveAddresses(reg);
 
@@ -136,3 +168,4 @@ export function useLeaderboard() {
 
   return { builders, creators, loading, error };
 }
+

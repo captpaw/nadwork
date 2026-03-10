@@ -231,6 +231,17 @@ p           { line-height: 1.7; color: var(--c-text-sec); }
   .hide-sm { display: none !important; }
 }
 
+/* ── Dashboard mobile ─────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .dashboard-claim-section {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .dashboard-claim-btns {
+    flex-direction: column !important;
+  }
+}
+
 /* ── Orbital board responsive ────────────────────────────────────────────── */
 .orbital-wrap {
   width: 560px;

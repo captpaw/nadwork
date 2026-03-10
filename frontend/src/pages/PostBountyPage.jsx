@@ -5,12 +5,14 @@ import { theme } from '../styles/theme';
 import Button from '../components/common/Button';
 import { uploadJSON, buildBountyMeta } from '../config/pinata';
 import { getContract } from '../utils/ethers';
+import { getResolvedRegistryContract, listCreatorBountyIds } from '../utils/registry.js';
+import { getFactoryCapabilities, seedFactoryCapabilities } from '../utils/factoryCapabilities.js';
 import { ADDRESSES, FACTORY_ABI } from '../config/contracts';
 import { toast } from '../utils/toast';
 import { requestNotificationRefresh } from '../hooks/useNotifications';
 import { IconCheck, IconX, IconCode, IconTarget, IconNote, IconChart, IconBounties, IconChevronLeft, IconChevronRight } from '../components/icons';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const CATEGORIES = [
   { key: 'Dev',      Icon: IconCode,  desc: 'Smart contracts, dApps, tooling' },
   { key: 'Design',   Icon: IconTarget, desc: 'UI/UX, branding, graphics'       },
@@ -25,13 +27,103 @@ const STEPS = [
   { id: 'review', label: 'Review', desc: 'Confirm and post'          },
 ];
 
+const DRAFT_KEY      = addr => `nw_draft_v1_${addr?.toLowerCase() || 'anon'}`;
+const DRAFT_STEP_KEY = addr => `nw_draft_step_v1_${addr?.toLowerCase() || 'anon'}`;
+const JUST_POSTED_KEY = 'nw_bounty_just_posted';
+
+function toBoolSafe(value, fallback = false) {
+  if (value == null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'bigint') return value !== 0n;
+  const s = String(value).trim().toLowerCase();
+  if (!s) return fallback;
+  if (['true', '1', 'yes', 'y', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(s)) return false;
+  return fallback;
+}
+
+const PRESET_SKILLS = [
+  'Solidity', 'React', 'TypeScript', 'JavaScript', 'Rust', 'Python',
+  'Smart Contract', 'DeFi', 'NFT', 'Node.js', 'GraphQL', 'Move',
+  'UI/UX', 'Figma', 'Branding', 'Illustration', 'Motion Design',
+  'Technical Writing', 'Documentation', 'Translation', 'Copywriting',
+  'Market Research', 'Tokenomics', 'Security Audit', 'Data Analysis',
+];
+function extractBountyIdFromReceipt(receipt) {
+  try {
+    const iface = new ethers.Interface(FACTORY_ABI);
+    for (const log of receipt?.logs || []) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed?.name !== 'BountyCreated') continue;
+        const raw = parsed?.args?.bountyId ?? parsed?.args?.[0];
+        if (raw == null) continue;
+        return String(raw);
+      } catch {
+        // ignore non-factory logs
+      }
+    }
+  } catch {
+    // ignore parsing errors
+  }
+  return '';
+}
+
+
+async function resolveBountyIdAfterPost(receipt, creator) {
+  const fromReceipt = extractBountyIdFromReceipt(receipt);
+  if (fromReceipt) return fromReceipt;
+  if (!creator) return '';
+
+  try {
+    const { contract: reg } = await getResolvedRegistryContract();
+    if (!reg) return '';
+
+    const ids = await listCreatorBountyIds(reg, creator);
+    if (!Array.isArray(ids) || ids.length === 0) return '';
+
+    let maxId = 0n;
+    for (const raw of ids) {
+      try {
+        const n = BigInt(raw);
+        if (n > maxId) maxId = n;
+      } catch {
+        // ignore malformed id entries
+      }
+    }
+
+    return maxId > 0n ? String(maxId) : '';
+  } catch {
+    return '';
+  }
+}
+function saveJustPostedHint(payload = {}) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(JUST_POSTED_KEY, JSON.stringify({
+      ts: Date.now(),
+      bountyId: payload?.bountyId ? String(payload.bountyId) : '',
+      title: payload?.title ? String(payload.title) : '',
+      category: payload?.category ? String(payload.category).toLowerCase() : '',
+      totalReward: payload?.totalReward ? String(payload.totalReward) : '',
+      deadline: payload?.deadline ? String(payload.deadline) : '',
+      creator: payload?.creator ? String(payload.creator) : '',
+      metaCid: payload?.metaCid ? String(payload.metaCid) : '',
+      requiresApplication: toBoolSafe(payload?.requiresApplication, false),
+    }));
+  } catch {
+    // ignore sessionStorage errors
+  }
+}
+
 const INITIAL_FORM = {
   title: '',
   description: '',
   category: 'Dev',
   requirements: [''],     // list: what builder must do
   deliverables: [''],     // list: what builder must submit
-  skills: '',
+  skills: [],           // array of strings
   reward: '',
   winnerCount: '1',
   deadline: '',
@@ -39,7 +131,7 @@ const INITIAL_FORM = {
   requiresApplication: false, // V4: curated project flag
 };
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// â”€â”€ Sub-components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function StepIndicator({ current }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', marginBottom: 36 }}>
@@ -257,6 +349,99 @@ function ItemInput({ value, placeholder, onChange }) {
   );
 }
 
+function TagInput({ label, hint, value = [], onChange, max = 10 }) {
+  const [inputVal, setInputVal] = useState('');
+  const [focused,  setFocused]  = useState(false);
+
+  const addTag = (raw) => {
+    const tag = raw.trim();
+    if (!tag || value.length >= max) return;
+    if (value.map(t => t.toLowerCase()).includes(tag.toLowerCase())) { setInputVal(''); return; }
+    onChange([...value, tag]);
+    setInputVal('');
+  };
+  const removeTag = (i) => onChange(value.filter((_, idx) => idx !== i));
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(inputVal); }
+    if (e.key === 'Backspace' && !inputVal && value.length > 0) removeTag(value.length - 1);
+  };
+
+  return (
+    <div>
+      {label && <FieldLabel hint={hint}>{label}</FieldLabel>}
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center',
+        padding: '8px 12px', minHeight: 44,
+        background: theme.colors.bg.input,
+        border: `1px solid ${focused ? theme.colors.primary : theme.colors.border.default}`,
+        borderRadius: theme.radius.md,
+        boxShadow: focused ? `0 0 0 3px ${theme.colors.primaryDim}` : 'none',
+        transition: theme.transition, cursor: 'text',
+      }}
+        onClick={() => document.getElementById('tag-input-field')?.focus()}
+      >
+        {value.map((tag, i) => (
+          <span key={i} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '2px 8px 2px 10px',
+            background: theme.colors.primaryDim,
+            border: `1px solid ${theme.colors.primaryBorder}`,
+            borderRadius: theme.radius.full,
+            fontFamily: theme.fonts.body, fontSize: 12, fontWeight: 500,
+            color: theme.colors.primaryLight,
+          }}>
+            {tag}
+            <button onClick={() => removeTag(i)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: theme.colors.primaryLight, opacity: 0.6,
+              fontSize: 14, lineHeight: 1, padding: 0, marginLeft: 2,
+            }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
+            >Ã—</button>
+          </span>
+        ))}
+        {value.length < max && (
+          <input
+            id="tag-input-field"
+            value={inputVal}
+            onChange={e => setInputVal(e.target.value)}
+            onKeyDown={onKeyDown}
+            onBlur={() => { addTag(inputVal); setFocused(false); }}
+            onFocus={() => setFocused(true)}
+            placeholder={value.length === 0 ? 'Type a skill and press Enter...' : ''}
+            style={{
+              flex: 1, minWidth: 120, border: 'none', outline: 'none',
+              background: 'transparent', color: theme.colors.text.primary,
+              fontFamily: theme.fonts.body, fontSize: 13.5,
+            }}
+          />
+        )}
+      </div>
+      {/* Preset suggestions */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
+        {PRESET_SKILLS.filter(p => !value.map(v => v.toLowerCase()).includes(p.toLowerCase())).slice(0, 10).map(p => (
+          <button key={p} onClick={() => addTag(p)} style={{
+            padding: '3px 9px',
+            background: theme.colors.bg.elevated,
+            border: `1px solid ${theme.colors.border.subtle}`,
+            borderRadius: theme.radius.full,
+            fontFamily: theme.fonts.body, fontSize: 11.5,
+            color: theme.colors.text.muted, cursor: 'pointer',
+            transition: theme.transition,
+          }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = theme.colors.primary; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.color = theme.colors.text.muted; }}
+          >+ {p}</button>
+        ))}
+      </div>
+      <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, marginTop: 4 }}>
+        Press Enter or comma to add - max {max}
+      </div>
+    </div>
+  );
+}
+
 function ReviewRow({ label, value, mono, accent, last }) {
   return (
     <div style={{
@@ -280,7 +465,7 @@ function ReviewRow({ label, value, mono, accent, last }) {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+// â”€â”€ Main page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function PostBountyPage() {
   const { isConnected, address } = useAccount();
   const { data: walletClient }   = useWalletClient();
@@ -290,9 +475,48 @@ export default function PostBountyPage() {
   const [loading, setLoading]   = useState(false);
   const [done, setDone]         = useState(false);
   const [creatorStake, setCreatorStake] = useState(null); // fetched from contract
-  const formRef = useRef(null);
+  const [showDraftBanner, setShowDraftBanner] = useState(false);
+  const [factoryCaps, setFactoryCaps] = useState(null);
+  const formRef    = useRef(null);
+  const saveTimerRef = useRef(null);
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const set = (k, v) => {
+    setForm(f => {
+      const next = { ...f, [k]: v };
+      if (address) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => {
+          try { localStorage.setItem(DRAFT_KEY(address), JSON.stringify(next)); } catch {}
+        }, 500);
+      }
+      return next;
+    });
+  };
+
+  const isLegacyOpenOnly = !!factoryCaps?.openOnlyLegacy;
+  const applicationFlowUnsupported = isLegacyOpenOnly || factoryCaps?.supportsApplications === false;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const caps = await getFactoryCapabilities();
+        if (!cancelled) setFactoryCaps(caps);
+      } catch {
+        if (!cancelled) setFactoryCaps(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!applicationFlowUnsupported) return;
+    setForm((prev) => (
+      prev.requiresApplication
+        ? { ...prev, requiresApplication: false }
+        : prev
+    ));
+  }, [applicationFlowUnsupported]);
 
   // Fetch creator stake estimate when reward changes
   useEffect(() => {
@@ -301,16 +525,23 @@ export default function PostBountyPage() {
     (async () => {
       try {
         if (!ADDRESSES.factory) return;
-        // Use a read-only call — no wallet needed
+        // Use a read-only call - no wallet needed
         const { ethers: e } = await import('ethers');
         const { getReadContract } = await import('../utils/ethers');
         const factory = getReadContract(ADDRESSES.factory, FACTORY_ABI);
+        const rewardWei = e.parseEther(form.reward);
+
+        const stakeFromGetter = await factory.getCreatorStake(rewardWei).catch(() => null);
+        if (stakeFromGetter != null) {
+          if (!cancelled) setCreatorStake(stakeFromGetter);
+          return;
+        }
+
         const [bps, min] = await Promise.all([
-          factory.CREATOR_STAKE_BPS().catch(() => 500n),
+          factory.CREATOR_STAKE_BPS().catch(() => 300n),
           factory.MIN_CREATOR_STAKE().catch(() => e.parseEther('0.01')),
         ]);
         if (cancelled) return;
-        const rewardWei = e.parseEther(form.reward);
         const calc = rewardWei * BigInt(bps) / 10000n;
         const stake = calc > min ? calc : min;
         setCreatorStake(stake);
@@ -325,7 +556,7 @@ export default function PostBountyPage() {
     if (!form.reward || isNaN(parseFloat(form.reward))) return null;
     try {
       const rewardWei = ethers.parseEther(form.reward);
-      const stake = creatorStake || (rewardWei * 500n / 10000n);
+      const stake = creatorStake || (rewardWei * 300n / 10000n);
       return rewardWei + stake;
     } catch { return null; }
   })();
@@ -334,9 +565,9 @@ export default function PostBountyPage() {
   const validateStep0 = () => {
     const e = {};
     if (!form.title.trim()) e.title = 'Title is required';
-    else if (form.title.length > 120) e.title = 'Title max 120 characters';
+    else if (form.title.length > 100) e.title = 'Title max 100 characters (contract limit)';
     if (!form.description.trim()) e.description = 'Description is required';
-    else if (form.description.length < 30) e.description = 'At least 30 characters — describe the task clearly';
+    else if (form.description.length < 30) e.description = 'At least 30 characters - describe the task clearly';
     const reqs = form.requirements.filter(r => r.trim());
     if (reqs.length === 0) e.requirements = 'Add at least one requirement';
     setErrors(e); return Object.keys(e).length === 0;
@@ -366,12 +597,16 @@ export default function PostBountyPage() {
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
-    setStep(s => s + 1);
+    const nextStep = step + 1;
+    setStep(nextStep);
+    if (address) try { localStorage.setItem(DRAFT_STEP_KEY(address), String(nextStep)); } catch {}
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleBack = () => {
-    setStep(s => s - 1);
+    const prevStep = step - 1;
+    setStep(prevStep);
+    if (address) try { localStorage.setItem(DRAFT_STEP_KEY(address), String(prevStep)); } catch {}
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -381,11 +616,11 @@ export default function PostBountyPage() {
 
     setLoading(true);
     try {
-      toast('Uploading metadata to IPFS…', 'info');
+      toast('Uploading metadata to IPFS...', 'info');
 
-      const skills = form.skills
-        ? form.skills.split(',').map(s => s.trim()).filter(Boolean)
-        : [];
+      const skills = Array.isArray(form.skills)
+        ? form.skills
+        : (form.skills ? form.skills.split(',').map(s => s.trim()).filter(Boolean) : []);
       const requirements = form.requirements.filter(r => r.trim());
       const deliverables = form.deliverables.filter(d => d.trim());
 
@@ -409,51 +644,225 @@ export default function PostBountyPage() {
       const prizeWeights = Array(winnerCount).fill(baseWeight);
       prizeWeights[0]   += 100 - baseWeight * winnerCount; // remainder to first
 
-      toast('Confirm transaction in your wallet…', 'info');
+      toast('Confirm transaction in your wallet...', 'info');
       const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, walletClient);
 
-      const creatorStakeBps = await factory.CREATOR_STAKE_BPS().catch(() => 300n);
-      const minCreatorStake = await factory.MIN_CREATOR_STAKE().catch(() => ethers.parseEther('0.01'));
-      const maxCreatorStake = await factory.MAX_CREATOR_STAKE().catch(() => ethers.parseEther('50'));
-      const calcStake = rewardWei * BigInt(creatorStakeBps) / 10000n;
-      let stake = calcStake < minCreatorStake ? minCreatorStake : calcStake;
-      if (stake > maxCreatorStake) stake = maxCreatorStake;
-      const totalValue = rewardWei + stake;
+      const CREATE_BOUNTY_V4_SIG = 'createBounty(string,string,string,uint8,address,uint256,uint8,uint8[],uint256,bool)';
 
-      const tx = await factory.createBounty(
+      const runtimeCaps = await getFactoryCapabilities(true);
+      if (runtimeCaps?.supportsCreateV4 === false) {
+        throw new Error('Active deployment is not V4-compatible (createBounty v4 missing).');
+      }
+      if (toBoolSafe(form.requiresApplication, false) && runtimeCaps?.supportsApplications === false) {
+        throw new Error('Active deployment does not support curated/apply flow.');
+      }
+
+      const effectiveRequiresApplication = toBoolSafe(form.requiresApplication, false);
+
+      const stakeValueMap = new Map();
+      const addStakeValue = (label, stakeRaw) => {
+        try {
+          const stake = BigInt(stakeRaw);
+          if (stake <= 0n) return;
+          if (stake > ethers.parseEther('200')) return;
+          const total = rewardWei + stake;
+          stakeValueMap.set(total.toString(), { label, value: total });
+        } catch {
+          // ignore invalid candidate
+        }
+      };
+
+      if (creatorStake != null) addStakeValue('ui-preview', creatorStake);
+
+      try {
+        const stakeFromGetter = await factory.getCreatorStake(rewardWei);
+        addStakeValue('getter', stakeFromGetter);
+      } catch {
+        // getter not available on some deployments
+      }
+
+      try {
+        const [creatorStakeBps, minCreatorStake, maxCreatorStake] = await Promise.all([
+          factory.CREATOR_STAKE_BPS(),
+          factory.MIN_CREATOR_STAKE(),
+          factory.MAX_CREATOR_STAKE(),
+        ]);
+        const calcStake = rewardWei * BigInt(creatorStakeBps) / 10000n;
+        let stake = calcStake < minCreatorStake ? minCreatorStake : calcStake;
+        if (stake > maxCreatorStake) stake = maxCreatorStake;
+        addStakeValue('constants', stake);
+      } catch {
+        // constants not available on some deployments
+      }
+
+      const heuristicMinStake = ethers.parseEther('0.01');
+      for (const bps of [100n, 200n, 250n, 300n, 400n, 500n, 1000n]) {
+        let stake = (rewardWei * bps) / 10000n;
+        if (stake < heuristicMinStake) stake = heuristicMinStake;
+        addStakeValue(`heuristic-${bps.toString()}bps`, stake);
+      }
+      addStakeValue('min-only', heuristicMinStake);
+      addStakeValue('min-0.005', ethers.parseEther('0.005'));
+      addStakeValue('min-0.05', ethers.parseEther('0.05'));
+      addStakeValue('min-0.1', ethers.parseEther('0.1'));
+
+      const titleForContract = form.title.trim().slice(0, 100);
+      const commonArgs = [
         ipfsHash,
-        form.title.trim(),
+        titleForContract,
         form.category.toLowerCase(),
-        0,                           // rewardType NATIVE
-        ethers.ZeroAddress,          // rewardToken
+        0,
+        ethers.ZeroAddress,
         rewardWei,
         winnerCount,
         prizeWeights,
         deadlineTs,
-        form.requiresApplication,    // V4: curated flag
-        { value: totalValue }
-      );
-      toast('Transaction submitted, waiting for confirmation…', 'info');
-      await tx.wait();
+      ];
+
+      const valueCandidates = new Map();
+      const addValueCandidate = (label, valueRaw) => {
+        try {
+          const value = BigInt(valueRaw);
+          if (value < 0n) return;
+          const key = value.toString();
+          if (!valueCandidates.has(key)) valueCandidates.set(key, { label, value });
+        } catch {
+          // ignore malformed value
+        }
+      };
+
+      for (const stakeCandidate of stakeValueMap.values()) {
+        addValueCandidate(`stake-${stakeCandidate.label}`, stakeCandidate.value);
+      }
+      addValueCandidate('reward-only', rewardWei);
+
+      const candidates = [];
+      for (const entry of valueCandidates.values()) {
+        candidates.push({
+          sig: CREATE_BOUNTY_V4_SIG,
+          args: [...commonArgs, effectiveRequiresApplication],
+          value: entry.value,
+          mode: `v4-${entry.label}`,
+        });
+      }
+
+      if (candidates.length === 0) {
+        throw new Error('No V4 createBounty candidate generated.');
+      }
+
+      let selected = null;
+      let lastEstimateError = null;
+      for (const c of candidates) {
+        const fn = factory[c.sig];
+        if (typeof fn !== 'function') continue;
+        try {
+          await fn.estimateGas(...c.args, { value: c.value });
+          selected = c;
+          break;
+        } catch (e) {
+          lastEstimateError = e;
+        }
+      }
+
+      if (!selected) {
+        throw lastEstimateError || new Error('No V4 createBounty path accepted by active deployment.');
+      }
+
+      if (import.meta.env.DEV) {
+        console.debug('[PostBounty] selected create candidate', {
+          mode: selected.mode,
+          valueWei: selected.value.toString(),
+        });
+      }
+
+      seedFactoryCapabilities({
+        supportsCreateV4: true,
+        supportsCreateV3: false,
+        supportsApplications: runtimeCaps?.supportsApplications !== false,
+        openOnlyLegacy: false,
+        source: 'post-submit',
+      });
+
+      const tx = await factory[selected.sig](...selected.args, { value: selected.value });
+      toast('Transaction submitted, waiting for confirmation...', 'info');
+      const receipt = await tx.wait();
+      const bountyId = await resolveBountyIdAfterPost(receipt, address);
+      saveJustPostedHint({
+        bountyId,
+        title: titleForContract,
+        category: form.category,
+        totalReward: rewardWei.toString(),
+        deadline: deadlineTs.toString(),
+        creator: address,
+        metaCid: ipfsHash,
+        requiresApplication: effectiveRequiresApplication,
+      });
       requestNotificationRefresh();
       toast('Bounty posted! Funds are now locked on-chain.', 'success');
       setDone(true);
     } catch (err) {
       console.error('[PostBounty]', err);
-      toast('Failed: ' + (err.reason || err.shortMessage || err.message || 'Unknown error'), 'error');
+      const rawMsg = err?.reason || err?.shortMessage || err?.message || 'Unknown error';
+      const msg = /no data present|require\\(false\\)|missing revert data|No V4 createBounty path/i.test(String(rawMsg))
+        ? 'Contract reverted tanpa pesan. Cek: (1) Judul max 100 karakter, (2) reward+stake sesuai kontrak, (3) alamat deployment V4 aktif benar.'
+        : rawMsg;
+      toast('Failed: ' + msg, 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleRestoreDraft = () => {
+    try {
+      const saved     = localStorage.getItem(DRAFT_KEY(address));
+      const savedStep = localStorage.getItem(DRAFT_STEP_KEY(address));
+      if (saved) { const parsed = JSON.parse(saved); setForm({ ...INITIAL_FORM, ...parsed, requiresApplication: toBoolSafe(parsed?.requiresApplication, false) }); }
+      if (savedStep) setStep(parseInt(savedStep) || 0);
+    } catch {}
+    setShowDraftBanner(false);
+  };
+
+  const handleDiscardDraft = () => {
+    try {
+      localStorage.removeItem(DRAFT_KEY(address));
+      localStorage.removeItem(DRAFT_STEP_KEY(address));
+    } catch {}
+    setShowDraftBanner(false);
+  };
+
+  // Check for saved draft on mount
+  useEffect(() => {
+    if (!address) return;
+    try {
+      const saved = localStorage.getItem(DRAFT_KEY(address));
+      if (saved && JSON.parse(saved)) setShowDraftBanner(true);
+    } catch {}
+  }, [address]);
+
+  // Clear draft on successful submit
+  useEffect(() => {
+    if (done && address) {
+      try {
+        localStorage.removeItem(DRAFT_KEY(address));
+        localStorage.removeItem(DRAFT_STEP_KEY(address));
+      } catch {}
+    }
+  }, [done, address]);
+
   const resetForm = () => {
     setDone(false); setStep(0);
     setForm(INITIAL_FORM); setErrors({});
     setCreatorStake(null);
+    if (address) {
+      try {
+        localStorage.removeItem(DRAFT_KEY(address));
+        localStorage.removeItem(DRAFT_STEP_KEY(address));
+      } catch {}
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // ── Not connected ──────────────────────────────────────────────────────────
+  // â”€â”€ Not connected â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!isConnected) {
     return (
       <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
@@ -462,7 +871,7 @@ export default function PostBountyPage() {
           background: theme.colors.primaryDim, border: `1px solid ${theme.colors.primaryBorder}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           margin: '0 auto 24px', fontSize: 24,
-        }}>◎</div>
+        }}>O</div>
         <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 22, letterSpacing: '-0.03em', color: theme.colors.text.primary, marginBottom: 10 }}>Connect your wallet</h2>
         <p style={{ fontSize: 13.5, color: theme.colors.text.muted, fontWeight: 300, lineHeight: 1.7 }}>
           You need a connected wallet to post a bounty and lock reward funds on-chain.
@@ -471,7 +880,7 @@ export default function PostBountyPage() {
     );
   }
 
-  // ── Done ───────────────────────────────────────────────────────────────────
+  // â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (done) {
     return (
       <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
@@ -481,10 +890,10 @@ export default function PostBountyPage() {
           boxShadow: `0 0 48px ${theme.colors.primaryGlow}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           margin: '0 auto 28px', fontSize: 28, color: theme.colors.primary,
-        }}>◉</div>
+        }}>O</div>
         <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 800, fontSize: 28, letterSpacing: '-0.04em', color: theme.colors.text.primary, marginBottom: 10 }}>Bounty Posted!</h2>
         <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, marginBottom: 32, lineHeight: 1.7 }}>
-          Your bounty is live on Monad. Funds are locked in the smart contract — builders can start submitting work.
+          Your bounty is live on Monad. Funds are locked in the smart contract - builders can start submitting work.
         </p>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
           <Button variant="primary" onClick={() => { window.location.hash = '#/bounties'; }}>
@@ -496,7 +905,7 @@ export default function PostBountyPage() {
     );
   }
 
-  // ── Form ───────────────────────────────────────────────────────────────────
+  // â”€â”€ Form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <div
       ref={formRef}
@@ -519,16 +928,49 @@ export default function PostBountyPage() {
         </p>
       </div>
 
+      {/* Draft banner */}
+      {showDraftBanner && (
+        <div style={{
+          padding: '14px 18px', marginBottom: 24,
+          background: theme.colors.primaryDim,
+          border: `1px solid ${theme.colors.primaryBorder}`,
+          borderRadius: theme.radius.lg,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap', gap: 10,
+        }}>
+          <div>
+            <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13.5, color: theme.colors.primaryLight, marginBottom: 2 }}>Draft saved</div>
+            <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted }}>Continue from where you left off?</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleRestoreDraft} style={{
+              padding: '7px 16px', borderRadius: theme.radius.md,
+              background: theme.colors.primary, color: '#fff',
+              border: 'none', fontFamily: theme.fonts.body,
+              fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}>Continue Draft</button>
+            <button onClick={handleDiscardDraft} style={{
+              padding: '7px 16px', borderRadius: theme.radius.md,
+              background: 'transparent', color: theme.colors.text.muted,
+              border: `1px solid ${theme.colors.border.default}`,
+              fontFamily: theme.fonts.body, fontSize: 12, cursor: 'pointer',
+            }}>Start Fresh</button>
+          </div>
+        </div>
+      )}
+
       <StepIndicator current={step} />
 
-      {/* ── Step 0: Task ──────────────────────────────────────────────────── */}
+      {/* â”€â”€ Step 0: Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {step === 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
 
           {/* Title */}
           <FormInput
             label="Title" required
+            hint="Max 100 characters (smart contract limit)"
             placeholder="e.g. Build a Monad DEX aggregator UI"
+            maxLength={100}
             value={form.title}
             onChange={e => set('title', e.target.value)}
             error={errors.title}
@@ -600,17 +1042,16 @@ export default function PostBountyPage() {
           />
 
           {/* Skills */}
-          <FormInput
+          <TagInput
             label="Required Skills"
-            hint="Comma-separated. Helps builders self-select."
-            placeholder="e.g. Solidity, React, TypeScript, ethers.js"
+            hint="Helps builders self-select for the task."
             value={form.skills}
-            onChange={e => set('skills', e.target.value)}
+            onChange={v => set('skills', v)}
           />
         </div>
       )}
 
-      {/* ── Step 1: Reward ────────────────────────────────────────────────── */}
+      {/* â”€â”€ Step 1: Reward â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {step === 1 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
 
@@ -706,7 +1147,7 @@ export default function PostBountyPage() {
             )}
           </div>
 
-          {/* Deadline — split date + time for cleaner, more consistent picker UI */}
+          {/* Deadline - split date + time for cleaner, more consistent picker UI */}
           <div>
             <FieldLabel required hint="Builders have until this date to submit work.">Submission Deadline</FieldLabel>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -773,15 +1214,17 @@ export default function PostBountyPage() {
             onChange={e => set('contactInfo', e.target.value)}
           />
 
-          {/* V4: Bounty type — Open or Curated */}
+          {/* V4: Bounty type - Open or Curated */}
           <div>
             <FieldLabel hint="Open bounty: anyone with a username can submit. Curated project: builders apply first, you approve who can submit.">
               Submission Mode
             </FieldLabel>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {[
-                { val: false, Icon: IconBounties, label: 'Open Bounty',      desc: 'Any registered builder can submit directly.' },
-                { val: true,  Icon: IconTarget,   label: 'Curated Project',   desc: 'Builders apply first; you choose who proceeds.' },
+                { val: false, Icon: IconBounties, label: 'Open Bounty', desc: 'Any registered builder can submit directly.' },
+                ...(!applicationFlowUnsupported
+                  ? [{ val: true, Icon: IconTarget, label: 'Curated Project', desc: 'Builders apply first; you choose who proceeds.' }]
+                  : []),
               ].map(opt => {
                 const active = form.requiresApplication === opt.val;
                 return (
@@ -793,7 +1236,7 @@ export default function PostBountyPage() {
                       display: 'flex', flexDirection: 'column', gap: 4,
                       padding: '12px 14px', textAlign: 'left',
                       background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
-                      border: `1.5px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                      border: `1.5px solid ${active ? theme.colors.primary : theme.colors.border.subtle}` ,
                       borderRadius: theme.radius.lg, cursor: 'pointer',
                       transition: theme.transition,
                     }}
@@ -815,8 +1258,21 @@ export default function PostBountyPage() {
                 );
               })}
             </div>
+            {applicationFlowUnsupported && (
+              <div style={{
+                marginTop: 8,
+                padding: '10px 12px',
+                background: 'rgba(110,84,255,0.04)',
+                border: `1px solid ${theme.colors.primaryBorder}` ,
+                borderRadius: theme.radius.md,
+                fontFamily: theme.fonts.body,
+                fontSize: 11.5,
+                color: theme.colors.text.muted,
+              }}>
+                Deployment ini belum mendukung application flow. Semua bounty diposting sebagai Open.
+              </div>
+            )}
           </div>
-
           {/* Escrow notice */}
           <div style={{
             padding: '14px 16px',
@@ -838,7 +1294,7 @@ export default function PostBountyPage() {
         </div>
       )}
 
-      {/* ── Step 2: Review ────────────────────────────────────────────────── */}
+      {/* â”€â”€ Step 2: Review â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {step === 2 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Summary card */}
@@ -855,8 +1311,8 @@ export default function PostBountyPage() {
             <ReviewRow label="Category" value={form.category} />
             <ReviewRow label="Reward"   value={`${form.reward} MON`} accent mono />
             {form.winnerCount !== '1' && <ReviewRow label="Winners" value={`${form.winnerCount} (equal split)`} mono />}
-            <ReviewRow label="Deadline" value={form.deadline ? new Date(form.deadline).toLocaleString() : '—'} />
-            <ReviewRow label="Mode"     value={form.requiresApplication ? 'Curated (apply-first)' : 'Open (direct submit)'} />
+            <ReviewRow label="Deadline" value={form.deadline ? new Date(form.deadline).toLocaleString() : '-'} />
+            <ReviewRow label="Mode"     value={applicationFlowUnsupported ? 'Open (direct submit)' : (form.requiresApplication ? 'Curated (apply-first)' : 'Open (direct submit)')} />
             {form.contactInfo && <ReviewRow label="Contact" value={form.contactInfo} />}
           </div>
 
@@ -931,7 +1387,7 @@ export default function PostBountyPage() {
               <div style={{ fontFamily: theme.fonts.mono, fontSize: 18, color: theme.colors.primary, fontWeight: 600, letterSpacing: '-0.02em' }}>
                 {totalLocked
                   ? (Number(totalLocked) / 1e18).toFixed(4)
-                  : form.reward ? (parseFloat(form.reward) * 1.05).toFixed(4) : '—'
+                  : form.reward ? (parseFloat(form.reward) * 1.05).toFixed(4) : '-'
                 } MON
               </div>
             </div>
@@ -949,7 +1405,7 @@ export default function PostBountyPage() {
         </div>
       )}
 
-      {/* ── Navigation ────────────────────────────────────────────────────── */}
+      {/* â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 36, gap: 10 }}>
         {step > 0 ? (
           <Button variant="ghost" icon={<IconChevronLeft size={14} color="currentColor" />} onClick={handleBack}>Back</Button>
@@ -970,3 +1426,35 @@ export default function PostBountyPage() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

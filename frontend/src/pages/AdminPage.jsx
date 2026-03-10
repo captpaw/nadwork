@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWalletClient } from 'wagmi';
 import { theme } from '../styles/theme';
 import Button from '../components/common/Button';
@@ -19,8 +19,8 @@ const ADMIN_WALLETS = (import.meta.env.VITE_ADMIN_WALLETS || '')
   .filter(Boolean);
 
 function shortenAddr(addr) {
-  if (!addr) return '—';
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  if (!addr) return 'â€”';
+  return `${addr.slice(0, 6)}â€¦${addr.slice(-4)}`;
 }
 
 function formatMon(wei) {
@@ -29,7 +29,7 @@ function formatMon(wei) {
 }
 
 function formatRaisedAt(rejectedAt) {
-  if (!rejectedAt || rejectedAt === 0n) return '—';
+  if (!rejectedAt || rejectedAt === 0n) return 'â€”';
   const ms = Number(rejectedAt) * 1000;
   const now = Date.now();
   const diff = now - ms;
@@ -40,7 +40,7 @@ function formatRaisedAt(rejectedAt) {
 }
 
 function AddrLink({ addr, short }) {
-  if (!addr) return <span>—</span>;
+  if (!addr) return <span>â€”</span>;
   return (
     <a
       href={`#/profile/${addr}`}
@@ -73,9 +73,11 @@ export default function AdminPage() {
   const [resolving, setResolving] = useState(null);
   const [confirmResolve, setConfirmResolve] = useState(null);
   const [factoryOwner, setFactoryOwner] = useState(null);
+  const [factoryOwnerLoaded, setFactoryOwnerLoaded] = useState(false);
 
-  const isAdmin = address && ADMIN_WALLETS.includes(address.toLowerCase());
+  const isEnvAdmin = address && ADMIN_WALLETS.includes(address.toLowerCase());
   const isFactoryOwner = address && factoryOwner && address.toLowerCase() === factoryOwner.toLowerCase();
+  const hasAdminAccess = Boolean(isEnvAdmin || isFactoryOwner);
 
   const loadDisputeInfo = useCallback(async () => {
     if (!ADDRESSES.registry || !bounties.length) return;
@@ -112,6 +114,7 @@ export default function AdminPage() {
   useEffect(() => {
     if (!ADDRESSES.factory) {
       setFactoryOwner(null);
+      setFactoryOwnerLoaded(true);
       return;
     }
     let cancelled = false;
@@ -119,10 +122,16 @@ export default function AdminPage() {
       try {
         const factory = await getReadContractWithFallback(ADDRESSES.factory, FACTORY_ABI);
         const owner = await factory.owner();
-        if (!cancelled) setFactoryOwner(owner);
+        if (!cancelled) {
+          setFactoryOwner(owner);
+          setFactoryOwnerLoaded(true);
+        }
       } catch (err) {
         console.error('[AdminPage] loadFactoryOwner', err);
-        if (!cancelled) setFactoryOwner(null);
+        if (!cancelled) {
+          setFactoryOwner(null);
+          setFactoryOwnerLoaded(true);
+        }
       }
     };
     load();
@@ -212,7 +221,7 @@ export default function AdminPage() {
           textAlign: 'center',
         }}
       >
-        <div style={{ fontSize: 32, marginBottom: 20 }}>◎</div>
+        <div style={{ fontSize: 32, marginBottom: 20 }}>â—Ž</div>
         <h2
           style={{
             fontFamily: theme.fonts.body,
@@ -232,7 +241,11 @@ export default function AdminPage() {
     );
   }
 
-  if (!isAdmin) {
+  if (!hasAdminAccess && !factoryOwnerLoaded) {
+    return <PageLoader />;
+  }
+
+  if (!hasAdminAccess) {
     return (
       <div
         style={{
@@ -242,7 +255,7 @@ export default function AdminPage() {
           textAlign: 'center',
         }}
       >
-        <div style={{ fontSize: 32, marginBottom: 20, color: theme.colors.red[400] }}>⛔</div>
+        <div style={{ fontSize: 32, marginBottom: 20, color: theme.colors.red[400] }}>â›”</div>
         <h2
           style={{
             fontFamily: theme.fonts.body,
@@ -256,7 +269,7 @@ export default function AdminPage() {
           Access denied
         </h2>
         <p style={{ fontSize: 13, color: theme.colors.text.muted, fontWeight: 300 }}>
-          Your wallet is not in the admin list. Only BountyFactory owner can resolve disputes.
+          Your wallet is not authorized for Admin Dashboard access.
         </p>
       </div>
     );
@@ -390,7 +403,7 @@ export default function AdminPage() {
             const meta = investigateMeta[String(b.id)];
 
             return (
-              <div key={b.id} style={{ borderBottom: `1px solid ${theme.colors.border.faint}` }}>
+              <div key={String(b.id)} style={{ borderBottom: `1px solid ${theme.colors.border.faint}` }}>
                 <div
                   className="admin-table-row"
                   style={{
@@ -464,7 +477,7 @@ export default function AdminPage() {
                         rel="noopener noreferrer"
                         style={{ fontSize: 11, color: theme.colors.primary, textDecoration: 'none' }}
                       >
-                        Submission IPFS ↗
+                        Submission IPFS â†—
                       </a>
                     )}
                     <Button
@@ -527,7 +540,7 @@ export default function AdminPage() {
                           )}
                         </div>
                       ) : (
-                        <div style={{ fontSize: 12, color: theme.colors.text.muted }}>Loading…</div>
+                        <div style={{ fontSize: 12, color: theme.colors.text.muted }}>Loadingâ€¦</div>
                       )}
                     </div>
                     <div>
@@ -555,7 +568,7 @@ export default function AdminPage() {
                                   rel="noopener noreferrer"
                                   style={{ display: 'block', fontSize: 11, color: theme.colors.primary, marginBottom: 4 }}
                                 >
-                                  {d.label || 'Link'} ↗
+                                  {d.label || 'Link'} â†—
                                 </a>
                               ))}
                             </div>
@@ -564,11 +577,11 @@ export default function AdminPage() {
                             <span style={{ color: theme.colors.text.muted }}>No content. </span>
                           )}
                           <a href={GATEWAY + subIpfs} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: theme.colors.primary, marginTop: 8, display: 'inline-block' }}>
-                            Open raw JSON on IPFS ↗
+                            Open raw JSON on IPFS â†—
                           </a>
                         </div>
                       ) : (
-                        <div style={{ fontSize: 12, color: theme.colors.text.muted }}>Loading…</div>
+                        <div style={{ fontSize: 12, color: theme.colors.text.muted }}>Loadingâ€¦</div>
                       )}
                     </div>
                   </div>
@@ -590,11 +603,11 @@ export default function AdminPage() {
             <p style={{ fontFamily: theme.fonts.body, fontSize: 14, color: theme.colors.text.secondary, lineHeight: 1.6 }}>
               {confirmResolve.inFavorOfBuilders ? (
                 <>
-                  <strong style={{ color: theme.colors.green[400] }}>Resolve in favor of Builder</strong> — Builder will receive reward and stake refund. Creator stake may be slashed.
+                  <strong style={{ color: theme.colors.green[400] }}>Resolve in favor of Builder</strong> â€” Builder will receive reward and stake refund. Creator stake may be slashed.
                 </>
               ) : (
                 <>
-                  <strong style={{ color: theme.colors.red[400] }}>Resolve in favor of Creator</strong> — Builder&apos;s submission stake will be slashed. Creator keeps control.
+                  <strong style={{ color: theme.colors.red[400] }}>Resolve in favor of Creator</strong> â€” Builder&apos;s submission stake will be slashed. Creator keeps control.
                 </>
               )}
             </p>
@@ -646,3 +659,5 @@ export default function AdminPage() {
     </div>
   );
 }
+
+

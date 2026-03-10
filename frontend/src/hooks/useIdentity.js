@@ -3,7 +3,7 @@ import { getReadContractWithFallback, getContract } from '@/utils/ethers.js';
 import { ADDRESSES, IDENTITY_ABI } from '@/config/contracts.js';
 import { shortAddr } from '@/utils/format.js';
 
-// Module-level cache: address → { username, primary, linked, ts }
+// Module-level cache: address -> { username, primary, linked, ts }
 // Shared across all hook instances so multiple components don't re-fetch the same address.
 const _cache = new Map();
 const CACHE_TTL = 30_000; // 30 seconds
@@ -36,7 +36,6 @@ export function invalidateIdentityCache(addr) {
  */
 export function useIdentity(address) {
   const [data, setData]       = useState(null);
-  // FIX I-FE-3: Initialize loading as true when address is provided to prevent flash
   const [loading, setLoading] = useState(!!address);
   const [error, setError]     = useState(null);
   const mountedRef = useRef(true);
@@ -71,8 +70,35 @@ export function useIdentity(address) {
       setCached(address, parsed);
       if (mountedRef.current) { setData(parsed); setLoading(false); }
     } catch (err) {
-      console.warn('[useIdentity] fetch failed for', address, err?.message);
-      if (mountedRef.current) { setError(err?.message); setLoading(false); setData(null); }
+      const msg = err?.shortMessage || err?.reason || err?.message || 'Identity fetch failed';
+      const text = String(msg);
+      const isExpectedNoRecord =
+        err?.code === 'CALL_EXCEPTION' ||
+        /missing revert data|execution reverted|Registry: not found/i.test(text);
+      const isTransientRpc =
+        err?.code === 'UNKNOWN_ERROR' ||
+        /429|Too Many Requests|rate limit|could not coalesce error|timeout|network/i.test(text);
+
+      if (!isExpectedNoRecord && !isTransientRpc && import.meta.env.DEV) {
+        console.warn('[useIdentity] fetch failed for', address, msg);
+      }
+
+      // Avoid hammering RPC for known empty/transient states.
+      if (isExpectedNoRecord || isTransientRpc) {
+        setCached(address, {
+          username: '',
+          primaryWallet: address,
+          linkedWallets: [],
+          createdAt: 0,
+          updatedAt: 0,
+        });
+      }
+
+      if (mountedRef.current) {
+        setError(isExpectedNoRecord || isTransientRpc ? null : msg);
+        setLoading(false);
+        setData(null);
+      }
     }
   }, [address]);
 

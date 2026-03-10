@@ -3,7 +3,9 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
 import { theme } from '../../styles/theme';
 import { ADDRESSES } from '../../config/contracts';
+import { NETWORK_LABEL } from '../../config/network.js';
 import { useGlobalStats } from '../../hooks/useGlobalStats';
+import { usePendingClaims } from '../../hooks/usePendingClaims';
 import { LogoLockup } from '../common/Logo';
 import NotificationBell from '../common/NotificationBell';
 
@@ -64,6 +66,7 @@ export default function AppHeader() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const { bountyCount, submissionCount } = useGlobalStats();
+  const { hasPending, totalPending, formatMon } = usePendingClaims();
 
   // Config / env validation (critical contract addresses)
   const requiredKeys = ['factory', 'registry', 'escrow', 'reputation', 'identity'];
@@ -178,6 +181,29 @@ export default function AppHeader() {
 
           {/* Right side */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            {/* Claim pill — when user has pending payouts */}
+            {address && hasPending && (
+              <a
+                href="#/dashboard"
+                onClick={(e) => { e.preventDefault(); window.location.hash = '#/dashboard'; }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '6px 12px',
+                  background: theme.colors.amberDim,
+                  border: `1px solid ${theme.colors.amberBorder}`,
+                  borderRadius: theme.radius.md,
+                  fontFamily: theme.fonts.mono, fontSize: 11, fontWeight: 600,
+                  color: theme.colors.amber,
+                  textDecoration: 'none',
+                  transition: theme.transition,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(251,191,36,0.15)'; e.currentTarget.style.borderColor = theme.colors.amber; }}
+                onMouseLeave={e => { e.currentTarget.style.background = theme.colors.amberDim; e.currentTarget.style.borderColor = theme.colors.amberBorder; }}
+              >
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: theme.colors.amber, flexShrink: 0 }} />
+                Claim {formatMon(totalPending)} MON
+              </a>
+            )}
             {/* Notification bell — only when wallet is connected */}
             {address && <NotificationBell />}
 
@@ -274,7 +300,7 @@ export default function AppHeader() {
 
           <div style={{ display: 'flex', gap: 28, alignItems: 'center', overflow: 'hidden' }}>
             <TickerItem label="Contract"    value={factoryAddr} />
-            <TickerItem label="Network"     value="Monad Testnet" />
+            <TickerItem label="Network" value={NETWORK_LABEL} />
             <TickerItem label="Bounties"    value={bountyCount    != null ? String(bountyCount)    : '—'} />
             <TickerItem label="Submissions" value={submissionCount != null ? String(submissionCount) : '—'} />
           </div>
@@ -316,3 +342,4 @@ export default function AppHeader() {
     </>
   );
 }
+

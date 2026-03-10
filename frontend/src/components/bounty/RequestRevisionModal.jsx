@@ -8,22 +8,73 @@ import { toast } from '@/utils/toast.js';
 
 const REVISION_STORAGE = 'nadwork_revision';
 
-function getRevisionKey(bountyId, submissionId, kind) {
+function getLegacyKey(bountyId, submissionId, kind) {
   return `${REVISION_STORAGE}_${bountyId}_${submissionId}_${kind}`;
+}
+
+function getRequestsKey(bountyId, submissionId) {
+  return `${REVISION_STORAGE}_${bountyId}_${submissionId}_requests`;
+}
+
+function getResponsesKey(bountyId, submissionId) {
+  return `${REVISION_STORAGE}_${bountyId}_${submissionId}_responses`;
+}
+
+/** Returns array of request IPFS hashes (oldest first). */
+export function getRevisionRequests(bountyId, submissionId) {
+  try {
+    const raw = localStorage.getItem(getRequestsKey(bountyId, submissionId));
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+    const legacy = localStorage.getItem(getLegacyKey(bountyId, submissionId, 'request'));
+    if (legacy) return [legacy];
+    return [];
+  } catch { return []; }
+}
+
+/** Returns array of response IPFS hashes (oldest first). */
+export function getRevisionResponses(bountyId, submissionId) {
+  try {
+    const raw = localStorage.getItem(getResponsesKey(bountyId, submissionId));
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+    const legacy = localStorage.getItem(getLegacyKey(bountyId, submissionId, 'response'));
+    if (legacy) return [legacy];
+    return [];
+  } catch { return []; }
+}
+
+function appendRevisionRequest(bountyId, submissionId, ipfsHash) {
+  const arr = getRevisionRequests(bountyId, submissionId);
+  if (arr.includes(ipfsHash)) return;
+  const next = [...arr, ipfsHash];
+  localStorage.setItem(getRequestsKey(bountyId, submissionId), JSON.stringify(next));
+  localStorage.setItem(getLegacyKey(bountyId, submissionId, 'request'), ipfsHash);
+}
+
+function appendRevisionResponse(bountyId, submissionId, ipfsHash) {
+  const arr = getRevisionResponses(bountyId, submissionId);
+  if (arr.includes(ipfsHash)) return;
+  const next = [...arr, ipfsHash];
+  localStorage.setItem(getResponsesKey(bountyId, submissionId), JSON.stringify(next));
+  localStorage.setItem(getLegacyKey(bountyId, submissionId, 'response'), ipfsHash);
 }
 
 export function saveRevisionLink(bountyId, submissionId, kind, ipfsHash) {
   try {
-    localStorage.setItem(getRevisionKey(bountyId, submissionId, kind), ipfsHash);
+    if (kind === 'request') appendRevisionRequest(bountyId, submissionId, ipfsHash);
+    else if (kind === 'response') appendRevisionResponse(bountyId, submissionId, ipfsHash);
   } catch {}
 }
 
+/** Returns latest request hash (for backward compat). */
 export function getRevisionLink(bountyId, submissionId, kind) {
-  try {
-    return localStorage.getItem(getRevisionKey(bountyId, submissionId, kind)) || '';
-  } catch {
-    return '';
-  }
+  const arr = kind === 'request' ? getRevisionRequests(bountyId, submissionId) : getRevisionResponses(bountyId, submissionId);
+  return arr.length > 0 ? arr[arr.length - 1] : '';
 }
 
 export default function RequestRevisionModal({

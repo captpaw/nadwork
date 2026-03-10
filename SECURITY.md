@@ -1,18 +1,18 @@
-# Security Policy
+﻿# Security Policy
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| Latest  | ✅        |
+| Latest  | âœ…        |
 
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability, **do NOT open a public GitHub issue**.
 
 Please report it privately via:
-- **Email**: [your-email@domain.com] ← ganti dengan email kamu
-- **GitHub Security Advisories**: Gunakan tab "Security → Advisories" di repo ini
+- **Email**: [security@nadwork.xyz]
+- **GitHub Security Advisories**: Gunakan tab "Security â†’ Advisories" di repo ini
 
 We aim to respond within **48 hours** and resolve critical issues within **7 days**.
 
@@ -31,13 +31,13 @@ We aim to respond within **48 hours** and resolve critical issues within **7 day
 
 ### Layers of Protection
 
-1. **`.gitignore`** — Prevents `.env` and secret files from being staged
-2. **Pre-commit hook** (`.githooks/pre-commit`) — Scans staged diffs for secret patterns before every commit
-3. **GitHub Actions** (`.github/workflows/security.yml`) — Runs on every push/PR:
-   - **Gitleaks** — Full history secret scanning
-   - **npm audit** — Dependency vulnerability check
-   - **Slither** — Solidity smart contract static analysis
-   - **Custom env-leak check** — Verifies no `.env` files are tracked
+1. **`.gitignore`** â€” Prevents `.env` and secret files from being staged
+2. **Pre-commit hook** (`.githooks/pre-commit`) â€” Scans staged diffs for secret patterns before every commit
+3. **GitHub Actions** (`.github/workflows/security.yml`) â€” Runs on every push/PR:
+   - **Gitleaks** â€” Full history secret scanning
+   - **npm audit** â€” Dependency vulnerability check
+   - **Slither** â€” Solidity smart contract static analysis
+   - **Custom env-leak check** â€” Verifies no `.env` files are tracked
 
 ### Smart Contract Security
 
@@ -67,7 +67,7 @@ This configures git to use `.githooks/pre-commit` which blocks commits containin
    cp .env.example .env
    cp frontend/.env.example frontend/.env
    ```
-2. Fill in your own values — **never share or commit the filled `.env`**
+2. Fill in your own values â€” **never share or commit the filled `.env`**
 3. For the deployer `PRIVATE_KEY`: use a **dedicated deployment wallet** with minimal funds, not your main wallet
 
 ### Rotating Compromised Secrets
@@ -90,3 +90,4 @@ If a secret is accidentally committed:
 - All dependencies are pinned in `package-lock.json`
 - Run `npm audit` regularly
 - Update dependencies monthly or when vulnerabilities are reported
+

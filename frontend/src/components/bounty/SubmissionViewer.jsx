@@ -111,6 +111,7 @@ function Btn({ onClick, loading, disabled, children, variant = 'default' }) {
         fontFamily: t.fonts.body, fontSize: 12, fontWeight: 600,
         cursor: disabled || loading ? 'not-allowed' : 'pointer',
         transition: t.transition, opacity: disabled ? 0.5 : 1, whiteSpace: 'nowrap',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
       }}
     >{loading ? '…' : children}</button>
   );
@@ -142,6 +143,8 @@ export default function SubmissionViewer({
   onUploadRevisionOpen,
   bountyId,
   canViewContent = true,
+  hasPendingRevision = false,
+  revisionRefresh = 0,
   actioning,
   connectedAddress,
   graceRejSec = 7200,
@@ -154,9 +157,6 @@ export default function SubmissionViewer({
   approving: legacyApproving,
   compact,
 }) {
-  const [open,    setOpen]  = useState(false);
-  const [meta,    setMeta]  = useState(null);
-  const [loading, setLoad]  = useState(false);
 
   // Support both new API (submission object) and legacy API (individual props)
   const sub       = submission || { ipfsHash: legacyIpfsHash, builder: legacyBuilder, status: 0n };
@@ -193,6 +193,19 @@ export default function SubmissionViewer({
   // Builder can withdraw stake after grace period
   const canWithdraw = isMySubmission && postGrace && !disputed && (sub.submissionStake > 0n);
 
+  const [open, setOpen] = useState(
+    hasPendingRevision && connectedAddress && builder?.toLowerCase() === connectedAddress.toLowerCase()
+  );
+  const [meta,    setMeta]  = useState(null);
+  const [loading, setLoad]  = useState(false);
+
+  // Keep revision alert auto-open behavior after async submission data arrives.
+  useEffect(() => {
+    if (hasPendingRevision && connectedAddress && builder?.toLowerCase() === connectedAddress.toLowerCase()) {
+      setOpen(true);
+    }
+  }, [hasPendingRevision, connectedAddress, builder]);
+
   useEffect(() => {
     if (!open || !ipfsHash || meta || !canViewContent) return;
     setLoad(true);
@@ -225,7 +238,17 @@ export default function SubmissionViewer({
             }}
             onMouseEnter={e => { e.currentTarget.style.background = t.colors.primaryDim; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-            {open ? <><IconChevronUp size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Hide</> : <><IconChevronDown size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} /> View Work</>}
+            {open ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <IconChevronUp size={12} style={{ flexShrink: 0 }} />
+                <span>Hide</span>
+              </span>
+            ) : (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <IconChevronDown size={12} style={{ flexShrink: 0 }} />
+                <span>View Work{hasPendingRevision ? ' (revision requested)' : ''}</span>
+              </span>
+            )}
           </button>
         ) : (
           <span style={{ fontSize: 11, color: t.colors.text.muted, fontStyle: 'italic' }}>
@@ -274,7 +297,10 @@ export default function SubmissionViewer({
           {/* Creator: reject */}
           {canReject && (
             <Btn onClick={onReject} loading={isRejecting} variant="danger">
-              <IconX size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Reject
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <IconX size={12} style={{ flexShrink: 0 }} />
+                <span>Reject</span>
+              </span>
             </Btn>
           )}
 
@@ -364,6 +390,7 @@ export default function SubmissionViewer({
                     isCreator={isCreator}
                     isBuilder={isMySubmission}
                     isPending={isPending}
+                    revisionRefresh={revisionRefresh}
                     onRequestRevisionOpen={onRequestRevisionOpen}
                     onUploadRevisionOpen={onUploadRevisionOpen}
                   />

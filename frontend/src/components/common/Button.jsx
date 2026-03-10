@@ -45,6 +45,13 @@ const VARIANTS = {
     border:    theme.colors.border.default,
     shadow:    'none',
   },
+  amber: {
+    bg:        theme.colors.amberDim,
+    bgHover:   'rgba(251,191,36,0.2)',
+    color:     theme.colors.amber,
+    border:    theme.colors.amberBorder,
+    shadow:    'none',
+  },
 };
 
 const SIZES = {

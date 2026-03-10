@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { theme } from '../styles/theme';
 import { useGlobalStats } from '../hooks/useGlobalStats';
-import { useBounties } from '../hooks/useBounties';
+import { useOrbitalBounties } from '../hooks/useOrbitalBounties';
+import { getBountyId, readBountyField, selectOrbitalBounties, orbitalDebugLog } from '../utils/orbital.mjs';
+import { NETWORK_LABEL } from '../config/network.js';
 import { Seal } from '../components/common/Logo';
 import { IconChevronRight, IconBounties, IconTarget, IconChart } from '../components/icons';
 
@@ -33,80 +35,28 @@ const CAT_COLORS = {
   other:    { c: theme.colors.text.secondary, border: theme.colors.border.default },
 };
 
-// Default demo bounties — only used when there is no on-chain data yet.
-const DEMO_ORBITAL_BOUNTIES = [
-  { id: '1', title: 'Build Monad DEX router UI',      reward: '4.0', category: 'dev' },
-  { id: '2', title: 'Smart contract audit report',    reward: '2.5', category: 'research' },
-  { id: '3', title: 'Design NadWork marketing kit',   reward: '1.8', category: 'design' },
-  { id: '4', title: 'Integrate Monad RPC dashboard',  reward: '3.2', category: 'dev' },
-  { id: '5', title: 'Translate docs to Bahasa',       reward: '0.6', category: 'content' },
-  { id: '6', title: 'Create onboarding video',        reward: '1.2', category: 'content' },
-];
-
-// Pick which bounties appear in the orbital board:
-// - prefer ACTIVE bounties
-// - featured ones first
-// - then highest-total-reward
-// - capped to 6 unique ids
-function selectOrbitalBounties(source) {
-  if (!Array.isArray(source) || source.length === 0) return [];
-
-  const normalized = source.map((b) => {
-    let total = 0n;
-    try {
-      if (b.totalReward != null) {
-        total = BigInt(b.totalReward);
-      }
-    } catch {
-      total = 0n;
-    }
-    const statusNum = b.status != null ? Number(b.status) : 0;
-    return { ...b, _totalRewardSort: total, _statusNum: statusNum };
-  });
-
-  const active = normalized.filter(b => b._statusNum === 0);
-  const base   = active.length ? active : normalized;
-
-  const featured = base.filter(b => b.featured);
-  const regular  = base.filter(b => !b.featured);
-
-  const sortByRewardDesc = (arr) =>
-    [...arr].sort((a, b) => (b._totalRewardSort > a._totalRewardSort ? 1 : b._totalRewardSort < a._totalRewardSort ? -1 : 0));
-
-  const ordered = [...sortByRewardDesc(featured), ...sortByRewardDesc(regular)];
-
-  const seen = new Set();
-  const picked = [];
-  for (const b of ordered) {
-    const key = String(b.id ?? b.bountyId ?? '');
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    picked.push(b);
-    if (picked.length >= 6) break;
-  }
-
-  return picked;
-}
 
 // BountyNode: wrapRef is at position:absolute left:0 top:0
 // RAF moves it with transform: translate(px,py) translate(-50%,-50%)
 // so the card center lands exactly on the orbit position
 function BountyNode({ bounty, size, wrapRef, onClick }) {
   const [hov, setHov] = useState(false);
-  const cat      = CAT_COLORS[(bounty.category || 'other').toLowerCase()] || CAT_COLORS.other;
+  const rawCategory = readBountyField(bounty, 'category', 4);
+  const cat = CAT_COLORS[(String(rawCategory || 'other')).toLowerCase()] || CAT_COLORS.other;
   const w        = size === 'sm' ? 148 : 164;
-  const title    = bounty?.title    || 'Untitled';
-  let reward     = bounty?.reward   || bounty?.rewardAmount;
-  if (!reward && bounty?.totalReward != null) {
-    const raw = typeof bounty.totalReward === 'bigint'
-      ? Number(bounty.totalReward)
-      : Number(bounty.totalReward.toString?.() ?? bounty.totalReward);
+  const title = readBountyField(bounty, 'title', 3) || 'Untitled';
+  let reward = bounty?.reward || bounty?.rewardAmount;
+  const totalReward = readBountyField(bounty, 'totalReward', 9);
+  if (!reward && totalReward != null) {
+    const raw = typeof totalReward === 'bigint'
+      ? Number(totalReward)
+      : Number(totalReward.toString?.() ?? totalReward);
     if (!Number.isNaN(raw) && raw > 0) {
       reward = (raw / 1e18).toFixed(2).replace(/\.?0+$/, '');
     }
   }
   if (!reward) reward = '—';
-  const category = bounty?.category || 'Other';
+  const category = String(rawCategory || 'Other');
 
   return (
     <div
@@ -226,8 +176,7 @@ function OrbitalBoard({ bounties }) {
 
     rafRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafRef.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }, [inner.length, outer.length]);
 
   return (
     <div
@@ -315,16 +264,30 @@ function OrbitalBoard({ bounties }) {
       {/* ── Bounty nodes — positioned at center, moved by RAF via ref ── */}
       {inner.map((b, i) => (
         <BountyNode
-          key={b.id || i} bounty={b} size="sm"
+          key={String(getBountyId(b) ?? i)} bounty={b} size="sm"
           wrapRef={innerRefs[i]}
-          onClick={() => { if (b.id) window.location.hash = `#/bounty/${b.id}`; }}
+          onClick={() => {
+            const id = getBountyId(b);
+            if (id != null) {
+              window.location.hash = `#/bounty/${id}`;
+            } else {
+              window.location.hash = '#/bounties';
+            }
+          }}
         />
       ))}
       {outer.map((b, i) => (
         <BountyNode
-          key={b.id || i} bounty={b} size="md"
+          key={String(getBountyId(b) ?? i)} bounty={b} size="md"
           wrapRef={outerRefs[i]}
-          onClick={() => { if (b.id) window.location.hash = `#/bounty/${b.id}`; }}
+          onClick={() => {
+            const id = getBountyId(b);
+            if (id != null) {
+              window.location.hash = `#/bounty/${id}`;
+            } else {
+              window.location.hash = '#/bounties';
+            }
+          }}
         />
       ))}
     </div>
@@ -334,13 +297,34 @@ function OrbitalBoard({ bounties }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
-  const { bountyCount, submissionCount } = useGlobalStats();
-  const { bounties: activeBounties = [] } = useBounties({ status: 'active', sort: 'reward' });
+  const { bountyCount, submissionCount, orbitalBounties: statsOrbitalBounties = [] } = useGlobalStats();
+  const { bounties: liveOrbitalBounties = [], loading: orbitalLoading } = useOrbitalBounties();
 
-  useEffect(() => { setTimeout(() => setMounted(true), 80); }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => setMounted(true), 80);
+    return () => clearTimeout(timer);
+  }, []);
 
-  const selected = selectOrbitalBounties(activeBounties);
-  const orbitalBounties = selected.length ? selected : DEMO_ORBITAL_BOUNTIES;
+  const mergedOrbitalSources = useMemo(() => ([
+    ...liveOrbitalBounties,
+    ...statsOrbitalBounties,
+  ]), [liveOrbitalBounties, statsOrbitalBounties]);
+  const displayBounties = useMemo(() => selectOrbitalBounties(mergedOrbitalSources), [mergedOrbitalSources]);
+
+  useEffect(() => {
+    orbitalDebugLog('sources', {
+      live: liveOrbitalBounties.length,
+      stats: statsOrbitalBounties.length,
+      merged: mergedOrbitalSources.length,
+      display: displayBounties.length,
+      ids: displayBounties.map((b) => String(getBountyId(b))).filter(Boolean),
+    });
+  }, [
+    liveOrbitalBounties.length,
+    statsOrbitalBounties.length,
+    mergedOrbitalSources.length,
+    displayBounties.length,
+  ]);
 
   return (
     <div style={{ background: theme.colors.bg.base, minHeight: '100vh' }}>
@@ -378,7 +362,7 @@ export default function HomePage() {
           <span style={{
             fontFamily: theme.fonts.mono, fontSize: 12,
             color: theme.colors.primary, letterSpacing: '0.06em', textTransform: 'uppercase',
-          }}>Live on Monad Testnet</span>
+          }}>Live on {NETWORK_LABEL}</span>
         </div>
 
         {/* Headline */}
@@ -548,7 +532,19 @@ export default function HomePage() {
           <div style={{ height: 1, width: 60, background: theme.colors.border.default }} />
         </div>
 
-        <OrbitalBoard bounties={orbitalBounties} />
+        <OrbitalBoard bounties={displayBounties} />
+        {!orbitalLoading && displayBounties.length === 0 && (
+          <p style={{
+            marginTop: 16,
+            marginBottom: 0,
+            fontFamily: theme.fonts.body,
+            fontSize: 13,
+            color: theme.colors.text.muted,
+            textAlign: 'center',
+          }}>
+            No active orbital bounties found yet.
+          </p>
+        )}
 
         {/* Browse CTA below orbital */}
         <div style={{
@@ -664,3 +660,5 @@ export default function HomePage() {
     </div>
   );
 }
+
+

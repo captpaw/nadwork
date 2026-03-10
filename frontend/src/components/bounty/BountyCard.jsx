@@ -4,21 +4,57 @@ import Badge from '../common/Badge';
 import DeadlineTimer from './DeadlineTimer';
 import { fetchJSON } from '../../config/pinata';
 import { getProfileMeta } from '../../hooks/useProfileMeta';
+import { useDisplayName } from '../../hooks/useIdentity';
 import { AvatarDisplay } from '../common/Avatar';
+
+function toBoolSafe(value, fallback = false) {
+  if (value == null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'bigint') return value !== 0n;
+  const s = String(value).trim().toLowerCase();
+  if (!s) return fallback;
+  if (['true', '1', 'yes', 'y', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(s)) return false;
+  return fallback;
+}
 
 export default function BountyCard({ bounty, onClick, view = 'grid' }) {
   const [meta, setMeta] = useState(null);
 
   useEffect(() => {
-    const cid = bounty?.ipfsHash || bounty?.metadataCID;
-    if (cid) fetchJSON(cid).then(setMeta);
-  }, [bounty?.ipfsHash, bounty?.metadataCID]);
+    let alive = true;
+
+    const hasPresentation =
+      Boolean(String(bounty?.title || '').trim()) &&
+      Boolean(String(bounty?.category || '').trim()) &&
+      Boolean(String(bounty?.description || '').trim());
+
+    if (hasPresentation) {
+      setMeta(null);
+      return () => { alive = false; };
+    }
+
+    const cid = bounty?.ipfsHash || bounty?.metaCid || bounty?.metadataCID;
+    if (!cid) {
+      setMeta(null);
+      return () => { alive = false; };
+    }
+
+    fetchJSON(cid).then((data) => {
+      if (alive) setMeta(data);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [bounty?.ipfsHash, bounty?.metaCid, bounty?.metadataCID, bounty?.title, bounty?.category, bounty?.description]);
 
   const [hov, setHov] = useState(false);
 
   if (!bounty) return null;
 
-  const title       = meta?.title       || bounty?.title       || 'Untitled Bounty';
+  const title       = meta?.title || bounty?.title || (bounty?.id != null ? `Bounty #${bounty.id}` : 'Untitled Bounty');
   const description = meta?.fullDescription || meta?.description || bounty?.description || '';
   const category    = meta?.category    || bounty?.category    || 'other';
   // totalReward is a BigInt (Wei) from ethers v6; reward/rewardAmount are legacy string fields
@@ -32,11 +68,12 @@ export default function BountyCard({ bounty, onClick, view = 'grid' }) {
     : 'active';
   const deadline    = bounty?.deadline  || bounty?.expiresAt;
   const submCount   = Number(bounty?.submissionCount ?? 0);
-  const isFeatured    = bounty?.featured           || false;
-  const isCurated     = bounty?.requiresApplication || false;
+  const isFeatured = toBoolSafe(bounty?.featured, false);
+  const isCurated = toBoolSafe(bounty?.requiresApplication, false);
   const creator      = bounty?.creator || bounty?.poster;
   const creatorMeta  = creator ? getProfileMeta(creator) : null;
-  const creatorLabel = creatorMeta?.displayName
+  const { displayName: creatorUsername } = useDisplayName(creator);
+  const creatorLabel = creatorMeta?.displayName || creatorUsername
     || (creator ? `${creator.slice(0, 6)}…${creator.slice(-4)}` : null);
 
   const CAT_ACCENT = {
@@ -223,3 +260,6 @@ export default function BountyCard({ bounty, onClick, view = 'grid' }) {
     </div>
   );
 }
+
+
+

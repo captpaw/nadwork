@@ -1,138 +1,103 @@
-# NadWork — Pinata Pin Proxy (Cloudflare Worker)
+﻿# NadWork - Pinata Pin Proxy (Cloudflare Worker)
 
-Cloudflare Worker yang menjadi perantara antara frontend dan Pinata API.
-Secret key Pinata **tidak pernah masuk ke browser bundle** — hanya ada di
-environment variable Worker yang terenkripsi oleh Cloudflare.
+Cloudflare Worker ini menjadi perantara upload metadata IPFS ke Pinata.
+Pinata secret hanya ada di Worker secret, tidak pernah dibundel ke frontend.
 
 ```
-Browser → POST /api/pin (+ X-Proxy-Token) → Worker → Pinata API
+Browser -> POST /api/pin -> Worker -> Pinata API
 ```
 
----
+## Prasyarat
 
-## Prerequisites
+- Cloudflare account
+- Domain sudah dikelola Cloudflare (opsional, jika pakai custom route)
+- Node.js 18+
 
-- Akun Cloudflare (gratis)
-- Domain `nadwork.xyz` sudah di-proxy Cloudflare (orange cloud ✓)
-- Node.js ≥ 18
-
----
-
-## 1. Install Wrangler
+## 1) Install Wrangler
 
 ```bash
 npm install -g wrangler
 wrangler login
 ```
 
----
-
-## 2. Set Secrets
-
-Jalankan satu per satu — Wrangler akan prompt input (tidak ter-log):
+## 2) Set Worker secrets
 
 ```bash
 cd workers/pin-proxy
-
-# Pinata API key (dari pinata.cloud → API Keys)
 npx wrangler secret put PINATA_API_KEY
-
-# Pinata Secret API key
 npx wrangler secret put PINATA_API_SECRET
+```
 
-# Token random untuk mencegah abuse — generate dulu:
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-# Lalu paste hasilnya saat prompt:
+Opsional (mode ketat non-browser):
+
+```bash
 npx wrangler secret put PROXY_AUTH_TOKEN
 ```
 
-Catat nilai `PROXY_AUTH_TOKEN` — akan dipakai di `.env` frontend.
+## 3) Konfigurasi worker
 
----
+Atur `wrangler.toml`:
 
-## 3. Konfigurasi Domain (wrangler.toml)
+- `ALLOWED_ORIGIN` ke origin frontend produksi, contoh: `https://nadwork.xyz`
+- (opsional) `REQUIRE_PROXY_TOKEN = "1"` jika ingin mewajibkan `X-Proxy-Token`
 
-Buka `wrangler.toml`, uncomment bagian `[[routes]]`:
+Contoh:
 
 ```toml
-[[routes]]
-pattern = "nadwork.xyz/api/pin"
-zone_name = "nadwork.xyz"
+[vars]
+ALLOWED_ORIGIN = "https://nadwork.xyz"
+# REQUIRE_PROXY_TOKEN = "1"
 ```
 
----
+Jika pakai route domain, buka blok `[[routes]]` lalu isi `pattern` dan `zone_name`.
 
-## 4. Deploy
+## 4) Deploy
 
 ```bash
 cd workers/pin-proxy
 npx wrangler deploy
 ```
 
-Output akan menampilkan URL worker, contoh:
-`https://nadwork-pin-proxy.YOUR_SUBDOMAIN.workers.dev`
-
----
-
-## 5. Update Frontend .env (Production)
-
-Tambahkan ke `.env` production (Vercel/Netlify/server):
+## 5) Frontend env (production)
 
 ```env
 VITE_PIN_PROXY_URL=https://nadwork.xyz/api/pin
-VITE_PIN_PROXY_TOKEN=<nilai PROXY_AUTH_TOKEN yang tadi dicatat>
 ```
 
-Hapus atau kosongkan:
+Jangan isi Pinata secret di production frontend:
+
 ```env
 VITE_PINATA_API_KEY=
-# VITE_PINATA_SECRET_API_KEY=   ← jangan pernah ada di production
+VITE_PINATA_SECRET_API_KEY=
 ```
 
----
+## 6) Local development
 
-## 6. Local Development (tanpa deploy)
-
-Untuk dev lokal, isi `workers/pin-proxy/.dev.vars`:
+`workers/pin-proxy/.dev.vars`:
 
 ```env
 PINATA_API_KEY=your-pinata-key
-PINATA_API_SECRET=your_pinata_secret_here
-PROXY_AUTH_TOKEN=change-this-in-production
+PINATA_API_SECRET=your-pinata-secret
 ALLOWED_ORIGIN=http://localhost:3000
+# REQUIRE_PROXY_TOKEN=1
+# PROXY_AUTH_TOKEN=dev-token
 ```
 
-Jalankan worker lokal:
+Jalankan worker:
 
 ```bash
 cd workers/pin-proxy
 npx wrangler dev
-# Worker berjalan di http://localhost:8787
 ```
 
-Update `.env` frontend untuk dev:
+Set frontend dev:
 
 ```env
 VITE_PIN_PROXY_URL=http://localhost:8787/api/pin
-VITE_PIN_PROXY_TOKEN=change-this-in-production
 ```
 
----
+## Security notes
 
-## Alur Keamanan
-
-| Kondisi | Cara upload |
-|---|---|
-| Dev lokal (tanpa proxy) | API key + secret langsung ke Pinata |
-| Dev lokal (dengan proxy) | `localhost:8787/api/pin` + dev token |
-| **Production** | `nadwork.xyz/api/pin` + PROXY_AUTH_TOKEN |
-
-Secret Pinata **tidak pernah ada di browser** pada mode production.
-
----
-
-## Limits & Monitoring
-
-- Cloudflare Workers free tier: **100.000 request/hari** — lebih dari cukup
-- Monitor di: Cloudflare Dashboard → Workers → `nadwork-pin-proxy` → Metrics
-- Kalau di-abuse: rotate `PROXY_AUTH_TOKEN` dan update di frontend env
+- Produksi: wajib set `ALLOWED_ORIGIN` spesifik, jangan `*`.
+- Rate limit bawaan worker bersifat best-effort per isolate.
+- Untuk proteksi lebih ketat, gunakan Cloudflare WAF/Rate Limiting rules.

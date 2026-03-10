@@ -15,18 +15,21 @@ import ProposalViewModal from '../components/bounty/ProposalViewModal';
 import { saveRevisionLink, getRevisionLink } from '../components/bounty/RequestRevisionModal';
 import { AvatarDisplay } from '../components/common/Avatar';
 import { useBounty } from '../hooks/useBounty';
+import { getFactoryCapabilities } from '../utils/factoryCapabilities';
 import { getContract, getReadContractWithFallback, getReadContractFast } from '../utils/ethers';
 import { ADDRESSES, FACTORY_ABI, REGISTRY_ABI } from '../config/contracts';
 import { toast } from '../utils/toast';
 import { requestNotificationRefresh } from '../hooks/useNotifications';
 import { getProfileMeta } from '../hooks/useProfileMeta';
+import { useDisplayName } from '../hooks/useIdentity';
 import { IconWarning, IconChevronLeft, IconExternalLink, IconChevronRight, IconTarget, IconClock } from '../components/icons';
 
 // ── Creator mini-card ─────────────────────────────────────────────────────────
 function CreatorCard({ address }) {
-  const meta      = getProfileMeta(address);
-  const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`;
-  const name      = meta?.displayName || shortAddr;
+  const meta       = getProfileMeta(address);
+  const { displayName } = useDisplayName(address); // on-chain username
+  const shortAddr  = `${address.slice(0, 6)}…${address.slice(-4)}`;
+  const name       = meta?.displayName || displayName || shortAddr;
 
   return (
     <div
@@ -45,7 +48,7 @@ function CreatorCard({ address }) {
         <AvatarDisplay address={address} size={36} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13, color: theme.colors.text.primary }}>{name}</div>
-          {meta?.displayName && <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint }}>{shortAddr}</div>}
+          {(meta?.displayName || displayName) && <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint }}>{shortAddr}</div>}
         </div>
         <IconExternalLink size={12} color={theme.colors.text.faint} style={{ flexShrink: 0 }} />
       </div>
@@ -188,13 +191,17 @@ export default function BountyDetailPage() {
   const [applications,   setApplications]   = useState([]);    // creator sees all
   const [myApplication,  setMyApplication]  = useState(null);  // builder sees own
   const [approvingAddr,  setApprovingAddr]  = useState(null);  // address being approved
+  const [applicationFlowEnabled, setApplicationFlowEnabled] = useState(false);
 
   // Opsi B: Revision (off-chain) modals
   const [requestRevisionSubId, setRequestRevisionSubId] = useState(null);
   const [revisionResponseSubId, setRevisionResponseSubId] = useState(null);
+  const [revisionRefresh, setRevisionRefresh] = useState(0);
 
   // Proposal view modal (creator reviewing builder application)
   const [proposalViewApp, setProposalViewApp] = useState(null);
+
+  const requiresApplication = applicationFlowEnabled && !!bounty?.requiresApplication;
 
   // Opsi B: Parse URL params ?revisionRequest= & ?revisionResponse= & submissionId= and persist
   useEffect(() => {
@@ -209,6 +216,16 @@ export default function BountyDetailPage() {
     if (req && subId) saveRevisionLink(id, subId, 'request', req);
     if (res && subId) saveRevisionLink(id, subId, 'response', res);
   }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const caps = await getFactoryCapabilities().catch(() => null);
+      if (cancelled) return;
+      setApplicationFlowEnabled(!(caps?.openOnlyLegacy || caps?.supportsApplications === false));
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Fetch on-chain constants + pending pull-payment amounts for connected user
   useEffect(() => {
@@ -255,7 +272,7 @@ export default function BountyDetailPage() {
 
   // V4: Fetch application data when bounty is loaded
   useEffect(() => {
-    if (!bounty || !bounty.requiresApplication || !ADDRESSES.factory) return;
+    if (!bounty || !requiresApplication || !ADDRESSES.factory) return;
     const f = getReadContractFast(ADDRESSES.factory, FACTORY_ABI);
     const _isCreator = address && bounty.creator?.toLowerCase() === address.toLowerCase();
 
@@ -273,7 +290,7 @@ export default function BountyDetailPage() {
         })
         .catch(() => setMyApplication(null));
     }
-  }, [bounty?.requiresApplication, bounty?.creator, id, address]);
+  }, [requiresApplication, bounty?.creator, id, address]);
 
   if (loading) return <PageLoader />;
   if (error || !bounty) {
@@ -308,13 +325,13 @@ export default function BountyDetailPage() {
 
   // Block apply/submit when bounty has ever had a disputed submission (dispute raised)
   const hasDisputedSubmission = submissions.some((s) => !!s.disputed);
-  // canSubmit: active OR reviewing, not creator, connected, before deadline, no disputed submission
-  const isApprovedApplicant = bounty.requiresApplication
+  // canSubmit: active OR reviewing, not creator, connected, before deadline, approved (if curated), no disputed, no existing submission
+  const isApprovedApplicant = requiresApplication
     ? (myApplication != null && Number(myApplication.status) === 1)
     : true;
-  const canSubmit = isLive && !isCreator && !!address && !deadlinePast && isApprovedApplicant && !hasDisputedSubmission;
+  const canSubmit = isLive && !isCreator && !!address && !deadlinePast && isApprovedApplicant && !hasDisputedSubmission && !mySubmission;
   // Builder can apply if: curated, active, not creator, before deadline, no application yet, no submission yet, no disputed submission
-  const canApply = bounty.requiresApplication && isActive && !isCreator && !!address
+  const canApply = requiresApplication && isActive && !isCreator && !!address
     && !deadlinePast && !myApplication && !mySubmission && !hasDisputedSubmission;
   const mySubStatus  = mySubmission ? Number(mySubmission.status) : -1; // 0=pending 1=approved 2=rejected
 
@@ -550,7 +567,7 @@ export default function BountyDetailPage() {
             <Badge type={status} />
             <Badge type={meta?.category || bounty.category || 'other'} />
             {bounty.featured && <Badge type="featured" label="Featured" />}
-            {bounty.requiresApplication && (
+            {requiresApplication && (
               <span style={{
                 fontFamily: theme.fonts.mono, fontSize: 9.5, fontWeight: 500,
                 color: theme.colors.amber, letterSpacing: '0.06em', textTransform: 'uppercase',
@@ -579,6 +596,43 @@ export default function BountyDetailPage() {
               </div>
             )}
           </div>
+
+          {/* Prominent CTA for builders — visible immediately, no scroll */}
+          {!isCreator && (canSubmit || canApply || !address) && (
+            <div style={{
+              padding: '16px 20px',
+              marginBottom: 28,
+              background: theme.colors.primaryDim,
+              border: `1px solid ${theme.colors.primaryBorder}`,
+              borderRadius: theme.radius.lg,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+            }}>
+              <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 14, color: theme.colors.primaryLight }}>
+                {canSubmit && 'Ready to deliver? Submit your work.'}
+                {canApply && !canSubmit && 'This project requires an application. Submit your proposal first.'}
+                {!address && 'Connect your wallet to participate.'}
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {canSubmit && (
+                  <Button variant="primary" size="sm" iconRight={<IconChevronRight size={12} color="currentColor" />} onClick={() => setSubmitOpen(true)}>
+                    Submit Work
+                  </Button>
+                )}
+                {canApply && !canSubmit && (
+                  <Button variant="primary" size="sm" iconRight={<IconChevronRight size={12} color="currentColor" />} onClick={() => setApplyOpen(true)}>
+                    Apply / Submit Proposal
+                  </Button>
+                )}
+                {!address && (
+                  <span style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.muted }}>
+                    Connect wallet to see actions
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Description */}
           {(meta?.fullDescription || meta?.description) && (
@@ -694,7 +748,7 @@ export default function BountyDetailPage() {
           )}
 
           {/* ── V4: Builder Apply Panel (curated, not creator) ────────────── */}
-          {bounty.requiresApplication && !isCreator && address && (
+          {requiresApplication && !isCreator && address && (
             <SectionCard title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><IconTarget size={12} color={theme.colors.amber} /> Curated Project — Application Required</span>} style={{ borderColor: theme.colors.amberBorder }}>
 
               {!myApplication && (
@@ -723,11 +777,18 @@ export default function BountyDetailPage() {
               )}
 
               {myApplication && Number(myApplication.status) === 1 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <StatusBadge label="Approved" color={theme.colors.green[400]} bg={theme.colors.green.dim} borderColor={theme.colors.green.border} />
-                  <span style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted }}>
-                    {hasDisputedSubmission ? 'Submissions paused due to dispute.' : 'You may now submit your work.'}
-                  </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <StatusBadge label="Approved" color={theme.colors.green[400]} bg={theme.colors.green.dim} borderColor={theme.colors.green.border} />
+                    <span style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted }}>
+                      {hasDisputedSubmission ? 'Submissions paused due to dispute.' : 'You may now submit your work.'}
+                    </span>
+                  </div>
+                  {canSubmit && !hasDisputedSubmission && (
+                    <Button variant="primary" size="sm" iconRight={<IconChevronRight size={12} color="currentColor" />} onClick={() => setSubmitOpen(true)}>
+                      Submit Work
+                    </Button>
+                  )}
                 </div>
               )}
 
@@ -741,7 +802,7 @@ export default function BountyDetailPage() {
           )}
 
           {/* ── V4: Creator Applications Panel ────────────────────────────── */}
-          {bounty.requiresApplication && isCreator && (
+          {requiresApplication && isCreator && (
             <SectionCard title={`Applications (${applications.length})`}>
               {applications.length === 0 ? (
                 <p style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.muted, margin: 0 }}>
@@ -835,6 +896,16 @@ export default function BountyDetailPage() {
               )}
             </div>
 
+            {!isCreator && address && submissions.some(s => s.builder?.toLowerCase() === address.toLowerCase() && getRevisionLink(id, String(s.id), 'request')) && (
+              <div style={{
+                padding: '12px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10,
+                background: theme.colors.amberDim, border: `1px solid ${theme.colors.amberBorder}`, borderRadius: theme.radius.md,
+                fontSize: 13, fontWeight: 500, color: theme.colors.amber,
+              }}>
+                <span>Creator requested revision. Expand your submission below to view feedback and upload response.</span>
+              </div>
+            )}
+
             {submissions.length === 0 ? (
               <div style={{ padding: '32px', textAlign: 'center', border: `1px dashed ${theme.colors.border.subtle}`, borderRadius: theme.radius.lg }}>
                 <p style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.muted, fontWeight: 300 }}>
@@ -851,6 +922,8 @@ export default function BountyDetailPage() {
                     isCreator={isCreator}
                     isActive={isLive}
                     canViewContent={isCreator || (address && s.builder?.toLowerCase() === address.toLowerCase())}
+                    hasPendingRevision={!!(address && s.builder?.toLowerCase() === address.toLowerCase() && getRevisionLink(id, String(s.id), 'request'))}
+                    revisionRefresh={revisionRefresh}
                     onApprove={() => handleApprove(s.id)}
                     onReject={() => handleReject(s.id)}
                     onDispute={() => handleDispute(s.id)}
@@ -871,12 +944,41 @@ export default function BountyDetailPage() {
         {/* ── RIGHT SIDEBAR ─────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {/* Primary CTA */}
-          {canSubmit && !bounty.requiresApplication && (
+          {mySubmission && !isCreator && (
+            <div style={{
+              padding: '14px 16px',
+              background: mySubStatus === 1 ? theme.colors.green.dim : theme.colors.bg.elevated,
+              border: `1px solid ${mySubStatus === 1 ? theme.colors.green.border : theme.colors.border.subtle}`,
+              borderRadius: theme.radius.lg,
+              fontFamily: theme.fonts.body,
+              fontSize: 13,
+              color: mySubStatus === 1 ? theme.colors.green[400] : theme.colors.text.primary,
+              fontWeight: 600,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}>
+              <span>
+                {mySubStatus === 0 && '✓ Work submitted'}
+                {mySubStatus === 1 && '✓ Approved & Won'}
+                {mySubStatus === 2 && 'Submission rejected'}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 400, color: theme.colors.text.muted }}>
+                {mySubStatus === 0 && 'Pending review'}
+                {mySubStatus === 1 && bounty?.totalReward && (
+                  <>You won <strong style={{ color: theme.colors.primary }}>{formatMon(bounty.totalReward)} MON</strong></>
+                )}
+                {mySubStatus === 1 && !bounty?.totalReward && 'Payment released'}
+                {mySubStatus === 2 && 'Rejected'}
+              </span>
+            </div>
+          )}
+          {canSubmit && !requiresApplication && (
             <Button variant="primary" fullWidth iconRight={<IconChevronRight size={12} color="currentColor" />} onClick={() => setSubmitOpen(true)}>
               Submit Work
             </Button>
           )}
-          {canSubmit && bounty.requiresApplication && (
+          {canSubmit && requiresApplication && (
             <Button variant="primary" fullWidth iconRight={<IconChevronRight size={12} color="currentColor" />} onClick={() => setSubmitOpen(true)}>
               Submit Work
             </Button>
@@ -978,6 +1080,7 @@ export default function BountyDetailPage() {
         bountyId={id}
         submissionId={requestRevisionSubId}
         creatorAddress={address}
+        onSuccess={() => setRevisionRefresh(r => r + 1)}
       />
 
       {/* Opsi B: Revision Response modal (builder) */}
@@ -988,6 +1091,7 @@ export default function BountyDetailPage() {
         submissionId={revisionResponseSubId}
         requestIpfs={revisionResponseSubId ? (getRevisionLink(id, revisionResponseSubId, 'request') || '') : ''}
         builderAddress={address}
+        onSuccess={() => setRevisionRefresh(r => r + 1)}
       />
 
       {/* Proposal view modal (creator reviewing curated applications) */}
@@ -1000,3 +1104,11 @@ export default function BountyDetailPage() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
