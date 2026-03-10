@@ -1,0 +1,308 @@
+/* ── NadWork Global Styles v3 ────────────────────────────────────────────────
+   Base: Clean Dark (#0f0f0f) · Accent: Monad Purple #6E54FF
+   Fonts: Outfit (body/display) + DM Mono (data)
+   ────────────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700;800;900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --c-bg:           #0f0f0f;
+  --c-card:         #161616;
+  --c-elevated:     #1c1c1c;
+  --c-border:       #303030;
+  --c-border-sub:   #242424;
+  --c-text:         #f0f0f0;
+  --c-text-sec:     #b0b0b0;
+  --c-text-muted:   #787878;
+  --c-purple:       #6E54FF;
+  --c-purple-dim:   rgba(110,84,255,0.08);
+  --c-purple-border:rgba(110,84,255,0.20);
+  --c-purple-glow:  rgba(110,84,255,0.30);
+  --c-cyan:         #85E6FF;
+  --c-pink:         #FF8EE4;
+  --c-amber:        #FFAE45;
+
+  --font-body: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'DM Mono', 'Fira Code', monospace;
+
+  --r-xs:  4px;
+  --r-sm:  6px;
+  --r-md:  8px;
+  --r-lg:  12px;
+  --r-xl:  14px;
+  --r-2xl: 18px;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--c-text);
+  background: var(--c-bg);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #282828; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #333; }
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+::selection { background: rgba(110,84,255,0.18); color: #e8e8e8; }
+
+/* ── Focus ───────────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 1.5px solid rgba(110,84,255,0.45);
+  outline-offset: 2px;
+}
+
+/* ── App shell ───────────────────────────────────────────────────────────── */
+#root          { display: flex; flex-direction: column; min-height: 100vh; }
+.app-content   { padding-top: 106px; flex: 1; } /* 68px header + 38px ticker */
+
+/* ── Container ───────────────────────────────────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left:  clamp(16px, 4vw, 48px);
+  padding-right: clamp(16px, 4vw, 48px);
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-body);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  color: var(--c-text);
+}
+a           { color: inherit; text-decoration: none; }
+button      { border: none; background: none; cursor: pointer; font-family: var(--font-body); }
+input, textarea, select { font-family: var(--font-body); }
+img, svg    { display: block; }
+p           { line-height: 1.7; color: var(--c-text-sec); }
+
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes livePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(110,84,255,0.6); }
+  50%       { box-shadow: 0 0 0 7px rgba(110,84,255,0); }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+@keyframes sealSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Skeleton ────────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, #161616 25%, #1e1e1e 50%, #161616 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: var(--r-md);
+}
+
+/* ── Utility ─────────────────────────────────────────────────────────────── */
+.mono     { font-family: var(--font-mono) !important; }
+.truncate { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.enter-up   { animation: fadeUp  0.3s cubic-bezier(0.16,1,0.3,1) both; }
+.enter-fade { animation: fadeIn  0.25s ease both; }
+
+/* ── Gradient text ───────────────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, var(--c-purple) 0%, var(--c-cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Markdown body ───────────────────────────────────────────────────────── */
+.md-body p          { margin-bottom: 0.75em; color: var(--c-text-sec); }
+.md-body h1,
+.md-body h2,
+.md-body h3         { font-weight: 600; margin-bottom: 0.5em; margin-top: 1em; color: var(--c-text); }
+.md-body ul,
+.md-body ol         { padding-left: 1.4em; margin-bottom: 0.75em; }
+.md-body li         { margin-bottom: 0.25em; color: var(--c-text-sec); }
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--c-elevated);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+  color: var(--c-purple);
+}
+.md-body pre {
+  background: var(--c-card);
+  border: 1px solid var(--c-border-sub);
+  border-radius: var(--r-md);
+  padding: 14px;
+  overflow-x: auto;
+  margin-bottom: 0.75em;
+}
+.md-body pre code { background: none; border: none; padding: 0; color: #c8c8c8; }
+.md-body a         { color: var(--c-purple); text-decoration: underline; text-underline-offset: 2px; }
+.md-body blockquote {
+  border-left: 2px solid var(--c-purple);
+  padding-left: 12px;
+  color: var(--c-text-muted);
+  margin: 0 0 0.75em;
+}
+
+/* ── Table base ──────────────────────────────────────────────────────────── */
+.bounty-table { width: 100%; border-collapse: collapse; }
+.bounty-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--c-text-muted);
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--c-border);
+}
+.bounty-table td {
+  padding: 0;
+  border-bottom: 1px solid var(--c-border-sub);
+  vertical-align: middle;
+}
+
+/* ── RainbowKit overrides ────────────────────────────────────────────────── */
+[data-rk] {
+  --rk-font-family:                  'Outfit', sans-serif !important;
+  --rk-colors-accentColor:           #6E54FF !important;
+  --rk-colors-accentColorForeground: #ffffff !important;
+  --rk-colors-modalBackground:       #161616 !important;
+  --rk-colors-modalBorder:           #262626 !important;
+  --rk-colors-generalBorder:         #262626 !important;
+  --rk-colors-menuItemBackground:    #1c1c1c !important;
+  --rk-colors-modalText:             #e8e8e8 !important;
+  --rk-colors-modalTextSecondary:    #909090 !important;
+}
+
+/* ── Responsive helpers ──────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+  .container   { padding-left: 16px; padding-right: 16px; }
+  .app-content { padding-top: 68px; } /* no ticker on mobile */
+}
+@media (min-width: 769px) {
+  .hide-desktop { display: none !important; }
+}
+@media (max-width: 520px) {
+  .hide-sm { display: none !important; }
+}
+
+/* ── Dashboard mobile ─────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .dashboard-claim-section {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .dashboard-claim-btns {
+    flex-direction: column !important;
+  }
+}
+
+/* ── Orbital board responsive ────────────────────────────────────────────── */
+.orbital-wrap {
+  width: 560px;
+  max-width: 100%;
+  overflow: visible;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 auto;
+}
+@media (max-width: 600px) {
+  .orbital-wrap {
+    transform-origin: top center;
+    transform: scale(calc((100vw - 32px) / 560));
+    height: calc(560px * ((100vw - 32px) / 560));
+  }
+}
+
+/* ── Leaderboard table responsive ───────────────────────────────────────── */
+.lb-grid {
+  display: grid;
+  grid-template-columns: 48px 1fr 140px 90px;
+}
+@media (max-width: 520px) {
+  .lb-grid {
+    grid-template-columns: 36px 1fr 100px;
+  }
+  .lb-wins { display: none !important; }
+}
+
+/* ── Seal spin animation (used by Logo.jsx Seal animated prop) ───────────── */
+@keyframes sealSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Page section titles ─────────────────────────────────────────────────── */
+.page-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--c-text-muted);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.page-title {
+  font-family: var(--font-body);
+  font-weight: 800;
+  font-size: clamp(32px, 5vw, 48px);
+  letter-spacing: -0.04em;
+  color: var(--c-text);
+  line-height: 1.1;
+  margin-bottom: 10px;
+}
+
+/* ── Reward amount: hide spin buttons (manual input preferred) ─────────────── */
+.reward-amount-field input[type="number"]::-webkit-outer-spin-button,
+.reward-amount-field input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.reward-amount-field input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

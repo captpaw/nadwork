@@ -1,0 +1,128 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+frontend/dist/
+build/
+out/
+
+# ─── Environment / Secrets — NEVER commit ─────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/.env.production
+
+# Cloudflare Worker secrets
+workers/**/.dev.vars
+workers/**/secrets.json
+
+# ─── Private keys & wallets ───────────────────────────────────────────────────
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+keystore/
+mnemonic.txt
+seed.txt
+wallet.json
+private_key.txt
+secrets.json
+secrets.yaml
+secrets.yml
+
+# ─── Hardhat ──────────────────────────────────────────────────────────────────
+cache/
+artifacts/
+typechain-types/
+coverage/
+coverage.json
+.openzeppelin/
+
+# ─── Foundry (se ada) ─────────────────────────────────────────────────────────
+out/
+lib/
+
+# ─── Claude / AI IDE internals ────────────────────────────────────────────────
+.claude/
+
+# ─── Editor ───────────────────────────────────────────────────────────────────
+.cursor/
+.vscode/
+!.vscode/extensions.json
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V8
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ─── Testing & coverage ───────────────────────────────────────────────────────
+coverage/
+*.lcov
+.nyc_output/
+
+# ─── Temp / scratch files ─────────────────────────────────────────────────────
+*.tmp
+*.temp
+write_icons.js
+write_theme.js
+write_frontend*.js
+write-frontend*.js
+write-theme.js
+test_ps.txt
+scratch.*
+TODO.local.md
+
+# ─── Internal / draft documents (not for public repo) ─────────────────────────
+WORK_IN_PROGRESS.md
+REBRAND_DRAFT.md
+NADWORK_CONCEPT.md
+AUDIT_REPORT.md
+CHANGES_REPORT.md
+REFERENCE_CREATOR_BUILDER_CHANGES.md
+
+# ─── Deployment artifacts (addresses live in frontend/src/config/addresses.json) ─
+deployments/
+
+# ─── detect-secrets baseline (contains hashed secrets, safe to commit) ────────
+# .secrets.baseline  ← intentionally NOT ignored; commit the baseline file
+
+# ─── Security scan outputs ────────────────────────────────────────────────────
+gitleaks-report.json
+trufflehog-report.json
+semgrep-report.json
+snyk-report.json
+
+.tools/
+output/
