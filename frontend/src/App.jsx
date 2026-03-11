@@ -49,6 +49,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage.jsx'));
 const LeaderboardPage = lazy(() => import('./pages/LeaderboardPage.jsx'));
 const HelpPage = lazy(() => import('./pages/HelpPage.jsx'));
 const AdminPage = lazy(() => import('./pages/AdminPage.jsx'));
+const ComingSoonPage = lazy(() => import('./pages/ComingSoonPage.jsx'));
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -60,7 +61,8 @@ function useHashRoute() {
   return hash;
 }
 
-function Router({ hash, deploymentReady }) {
+function Router({ hash, deploymentReady, forceComingSoon }) {
+  if (forceComingSoon || hash === '#/coming-soon') return <ComingSoonPage />;
   if (hash.startsWith('#/bounty/')) {
     const id = hash.replace('#/bounty/', '');
     return <BountyDetailPage bountyId={id} />;
@@ -83,12 +85,14 @@ function Router({ hash, deploymentReady }) {
 export default function App() {
   const hash = useHashRoute();
   const deployment = useDeploymentHealth();
+  const forceComingSoon = String(import.meta.env.VITE_COMING_SOON || '').toLowerCase() === 'true';
+  const isComingSoonView = forceComingSoon || hash === '#/coming-soon';
 
   return (
     <div className="app" style={{ background: t.colors.bg.base, minHeight: '100vh' }}>
-      <AppHeader />
-      <main className="app-content">
-        {!deployment.loading && !deployment.ok && (
+      {!isComingSoonView && <AppHeader />}
+      <main className={isComingSoonView ? '' : 'app-content'}>
+        {!isComingSoonView && !deployment.loading && !deployment.ok && (
           <div style={{ maxWidth: 1200, margin: '16px auto 0', padding: '0 16px' }}>
             <div style={{ border: `1px solid ${t.colors.amber}`, background: 'rgba(255,174,69,0.08)', borderRadius: 12, padding: '12px 14px' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: t.colors.amber, fontWeight: 600, fontSize: 13 }}>
@@ -101,11 +105,11 @@ export default function App() {
         )}
         <ErrorBoundary>
           <Suspense fallback={<PageLoader />}>
-            <Router hash={hash} deploymentReady={deployment.ok} />
+            <Router hash={hash} deploymentReady={deployment.ok} forceComingSoon={forceComingSoon} />
           </Suspense>
         </ErrorBoundary>
       </main>
-      <AppFooter />
+      {!isComingSoonView && <AppFooter />}
       <ToastContainer />
     </div>
   );
