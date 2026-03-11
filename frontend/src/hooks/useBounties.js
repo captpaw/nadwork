@@ -133,7 +133,7 @@ function shouldShowHintInCurrentFilters(postedHint, { category, status, search, 
   }
 
   // Newly posted bounty is ACTIVE.
-  if (selectedStatus !== 'all' && selectedStatus !== 'active') {
+  if (selectedStatus !== 'all' && selectedStatus !== 'active' && selectedStatus !== 'open') {
     return false;
   }
 
@@ -176,6 +176,21 @@ function buildOptimisticBountyFromHint(postedHint, factoryCaps) {
   };
 }
 
+function matchesStatusFilter(bounty, status) {
+  const selected = String(status || 'all').toLowerCase();
+  const current = BigInt(bounty?.status ?? 0);
+
+  if (selected === 'all') return true;
+  if (selected === 'open') {
+    return current === STATUS_MAP.active || current === STATUS_MAP.reviewing || current === STATUS_MAP.disputed;
+  }
+  if (selected === 'history') {
+    return current === STATUS_MAP.completed || current === STATUS_MAP.expired || current === STATUS_MAP.cancelled;
+  }
+
+  const sv = STATUS_MAP[selected];
+  return sv === undefined ? true : current === sv;
+}
 function ensurePostedHintVisible(items, postedHint, filters) {
   if (!postedHint?.bountyId) return { items, found: false };
 
@@ -455,8 +470,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
           }
 
           if (status !== 'all') {
-            const sv = STATUS_MAP[status];
-            if (sv !== undefined) items = items.filter((b) => BigInt(b.status) === sv);
+            items = items.filter((b) => matchesStatusFilter(b, status));
           }
 
           if (search.trim()) {
@@ -487,7 +501,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
           const shouldRetryEmptyDefault =
             page === 0 &&
             category === 'all' &&
-            status === 'all' &&
+            (status === 'all' || status === 'open') &&
             !search.trim() &&
             stableSkills.length === 0 &&
             items.length === 0 &&
@@ -573,8 +587,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
 
       // Always apply status client-side so category+status combinations work correctly.
       if (status !== 'all') {
-        const statusVal = STATUS_MAP[status];
-        if (statusVal !== undefined) filtered = filtered.filter((b) => BigInt(b.status) === statusVal);
+        filtered = filtered.filter((b) => matchesStatusFilter(b, status));
       }
 
       if (search.trim()) {
@@ -617,7 +630,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       setBounties(filtered);
 
       const serverTotal = Number(totalCount);
-      if ((status !== 'all' && status !== 'active') || search.trim() || stableSkills.length > 0) {
+      if ((status !== 'all' && status !== 'active' && status !== 'open') || search.trim() || stableSkills.length > 0) {
         setTotal(filtered.length);
         setHasMore(result.length === LIMIT); // more pages might still have matches
       } else {

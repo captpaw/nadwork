@@ -9,7 +9,7 @@ import { IconArrowDown, IconTarget, IconClock, IconGrid, IconList, IconX, IconWa
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const CATEGORIES  = ['All', 'Dev', 'Design', 'Content', 'Research', 'Other'];
-const STATUSES    = ['All', 'Active', 'Reviewing', 'Completed', 'Expired'];
+const STATUSES    = ['Open', 'History', 'All', 'Active', 'Reviewing', 'Completed', 'Expired', 'Cancelled'];
 const TOP_SKILLS  = [
   'Solidity', 'React', 'TypeScript', 'UI/UX', 'Smart Contract',
   'DeFi', 'Figma', 'Python', 'Rust', 'Technical Writing',
@@ -123,7 +123,7 @@ function ViewToggle({ view, onChange }) {
 
 // ── Sidebar filter panel ──────────────────────────────────────────────────────
 function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillToggle, onClearSkills }) {
-  const { category = 'All', status = 'All' } = filters;
+  const { category = 'All', status = 'Open' } = filters;
   const update = (key, val) => onChange({ ...filters, [key]: val });
 
   return (
@@ -240,7 +240,7 @@ function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillTogg
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function BountiesPage() {
   const [filters, setFilters] = useState({
-    search: '', category: 'All', status: 'All', sort: 'newest',
+    search: '', category: 'All', status: 'Open', sort: 'newest',
   });
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [view, setView]   = useState('grid');
@@ -259,7 +259,7 @@ export default function BountiesPage() {
   const normalizedFilters = {
     search:   filters.search,
     category: (filters.category || 'All').toLowerCase(),
-    status:   (filters.status   || 'All').toLowerCase(),
+    status:   (filters.status   || 'Open').toLowerCase(),
     sort:     SORT_MAP[filters.sort] || 'newest',
   };
 
@@ -272,8 +272,8 @@ export default function BountiesPage() {
     completed: bounties.filter(b => Number(b.status) === 2).length,
   };
 
-  const hasActiveFilters = filters.category !== 'All' || filters.status !== 'All' || filters.search || selectedSkills.length > 0;
-  const resetFilters = () => { setFilters({ search: '', category: 'All', status: 'All', sort: filters.sort }); setSelectedSkills([]); };
+  const hasActiveFilters = filters.category !== 'All' || filters.status !== 'Open' || filters.search || selectedSkills.length > 0;
+  const resetFilters = () => { setFilters({ search: '', category: 'All', status: 'Open', sort: filters.sort }); setSelectedSkills([]); };
 
   return (
     <div style={{
@@ -406,10 +406,10 @@ export default function BountiesPage() {
               color: theme.colors.text.faint, letterSpacing: '0.05em',
             }}>
               {loading ? 'Loading…' : `${bounties.length} result${bounties.length !== 1 ? 's' : ''}`}
-              {!loading && (filters.category !== 'All' || filters.status !== 'All') && (
+              {!loading && (filters.category !== 'All' || filters.status !== 'Open') && (
                 <span style={{ color: theme.colors.text.muted }}>
                   {' · '}
-                  {[filters.category !== 'All' && filters.category, filters.status !== 'All' && filters.status]
+                  {[filters.category !== 'All' && filters.category, filters.status !== 'Open' && filters.status]
                     .filter(Boolean).join(' · ')}
                 </span>
               )}
@@ -449,10 +449,10 @@ export default function BountiesPage() {
                   color={getCatStyle(filters.category).color}
                 />
               )}
-              {filters.status !== 'All' && (
+              {filters.status !== 'Open' && (
                 <ActiveChip
                   label={`Status: ${filters.status}`}
-                  onRemove={() => setFilters(f => ({ ...f, status: 'All' }))}
+                  onRemove={() => setFilters(f => ({ ...f, status: 'Open' }))}
                 />
               )}
               {filters.search && (
@@ -487,7 +487,7 @@ export default function BountiesPage() {
             <EmptyState
               icon={<IconBounties size={32} color={theme.colors.text.faint} />}
               title="No bounties match"
-              message={hasActiveFilters ? 'Try adjusting your filters.' : 'Be the first to post a bounty on Monad.'}
+              message={hasActiveFilters ? 'Try adjusting your filters.' : 'No live bounties yet. Check History for archived items.'}
               action={hasActiveFilters ? resetFilters : () => { window.location.hash = '#/post'; }}
               actionLabel={hasActiveFilters ? 'Clear Filters' : 'Post a Bounty'}
             />
@@ -693,4 +693,5 @@ function ListRow({ bounty, last, onClick }) {
     </div>
   );
 }
+
 
