@@ -16,6 +16,7 @@
     "frontend:dev": "vite --config frontend/vite.config.js",
     "frontend:build": "vite build --config frontend/vite.config.js",
     "frontend:test:orbital": "node --test frontend/tests/orbital-selector.test.mjs",
+    "frontend:check:prod-config": "node scripts/check-frontend-prod-config.js",
     "sync:frontend:addresses": "node scripts/sync-frontend-addresses.js"
   },
   "devDependencies": {
