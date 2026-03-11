@@ -1,46 +1,56 @@
 {
-    "name":  "nadwork",
-    "version":  "1.0.0",
-    "description":  "NadWork — On-chain micro-task bounty platform on Monad blockchain",
-    "scripts":  {
-                    "compile":  "hardhat compile",
-                    "test":  "hardhat test",
-                    "test:coverage":  "hardhat coverage",
-                    "deploy:local":  "hardhat run scripts/deploy.js --network hardhat",
-                    "deploy:monad":  "hardhat run scripts/deploy.js --network monad_mainnet",
-                    "verify:monad":  "hardhat run scripts/verify.js --network monad_mainnet",
-                    "deploy:identity":  "hardhat run scripts/deploy-identity-only.js --network monad_mainnet",
-                    "node":  "hardhat node",
-                    "dev":  "vite --config frontend/vite.config.js",
-                    "build":  "vite build --config frontend/vite.config.js",
-                    "frontend:dev":  "vite --config frontend/vite.config.js",
-                    "frontend:build":  "vite build --config frontend/vite.config.js",
-                    "frontend:test:orbital":  "node --test frontend/tests/orbital-selector.test.mjs",
-                    "sync:frontend:addresses":  "node scripts/sync-frontend-addresses.js"
-                },
-    "devDependencies":  {
-                            "@nomicfoundation/hardhat-chai-matchers":  "^2.0.0",
-                            "@nomicfoundation/hardhat-ethers":  "^3.0.0",
-                            "@nomicfoundation/hardhat-network-helpers":  "^1.0.0",
-                            "@nomicfoundation/hardhat-verify":  "^2.0.0",
-                            "chai":  "^4.3.0",
-                            "dotenv":  "^16.0.0",
-                            "ethers":  "^6.16.0",
-                            "hardhat":  "^2.22.0",
-                            "solidity-coverage":  "^0.8.0"
-                        },
-    "dependencies":  {
-                         "@metamask/sdk":  "^0.34.0",
-                         "@rainbow-me/rainbowkit":  "^2.2.10",
-                         "@tanstack/react-query":  "^5.90.21",
-                         "@vitejs/plugin-react":  "^5.1.4",
-                         "framer-motion":  "^12.34.3",
-                         "react":  "^19.2.4",
-                         "react-dom":  "^19.2.4",
-                         "react-markdown":  "^10.1.0",
-                         "react-router-dom":  "^7.13.1",
-                         "viem":  "^2.46.3",
-                         "vite":  "^7.3.1",
-                         "wagmi":  "^3.5.0"
-                     }
+  "name": "nadwork",
+  "version": "1.0.0",
+  "description": "NadWork - On-chain micro-task bounty platform on Monad blockchain",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
+    "deploy:monad": "hardhat run scripts/deploy.js --network monad_mainnet",
+    "verify:monad": "hardhat run scripts/verify.js --network monad_mainnet",
+    "deploy:identity": "hardhat run scripts/deploy-identity-only.js --network monad_mainnet",
+    "node": "hardhat node",
+    "dev": "vite --config frontend/vite.config.js",
+    "build": "vite build --config frontend/vite.config.js",
+    "frontend:dev": "vite --config frontend/vite.config.js",
+    "frontend:build": "vite build --config frontend/vite.config.js",
+    "frontend:test:orbital": "node --test frontend/tests/orbital-selector.test.mjs",
+    "sync:frontend:addresses": "node scripts/sync-frontend-addresses.js"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.0",
+    "@nomicfoundation/hardhat-ethers": "^3.0.0",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.0",
+    "chai": "^4.3.0",
+    "dotenv": "^16.0.0",
+    "ethers": "^6.16.0",
+    "hardhat": "^2.22.0",
+    "solidity-coverage": "^0.8.0"
+  },
+  "dependencies": {
+    "@metamask/sdk": "^0.34.0",
+    "@rainbow-me/rainbowkit": "^2.2.10",
+    "@tanstack/react-query": "^5.90.21",
+    "@vitejs/plugin-react": "^5.1.4",
+    "framer-motion": "^12.34.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.13.1",
+    "viem": "^2.46.3",
+    "vite": "^7.3.1",
+    "wagmi": "^3.5.0"
+  },
+  "overrides": {
+    "immutable": "^4.3.8",
+    "tmp": "^0.2.4",
+    "ethjs-unit": {
+      "bn.js": "^4.12.3"
+    },
+    "number-to-bn": {
+      "bn.js": "^4.12.3"
+    }
+  }
 }
