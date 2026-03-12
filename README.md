@@ -35,6 +35,8 @@ npm run frontend:build
 - `SECURITY.md`
 - `AUDIT_REPORT.md`
 - `CHANGELOG.md`
+- `PRE_DEPLOY_SMOKE_CHECKLIST.md`
+- `RELEASE_RUNBOOK.md`
 
 ## License
 
