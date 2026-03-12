@@ -91,3 +91,21 @@ If a secret is accidentally committed:
 - Run `npm audit` regularly
 - Update dependencies monthly or when vulnerabilities are reported
 
+
+---
+
+## Known Residual Risk (Current)
+
+- `npm audit` may report low-severity findings in **dev-only** dependencies tied to Hardhat v2 toolchain.
+- Current production gate is `npm audit --omit=dev`; this is passing with zero vulnerabilities.
+- These dev findings do **not** ship to frontend production bundle and do not affect on-chain runtime logic.
+
+### Mitigation in place
+
+1. CI security workflow runs on each push/PR (gitleaks, slither, audit, env leak checks).
+2. Production gate check must pass:
+   - `npm run frontend:build`
+   - `npm run frontend:test:orbital`
+   - `npm test`
+   - `npm audit --omit=dev`
+3. Hardhat v3 migration is tracked as a planned future upgrade to reduce remaining dev-only advisories.
