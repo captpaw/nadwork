@@ -1,9 +1,6 @@
 import React, { useState, useEffect, Suspense, lazy, Component } from 'react';
 import { theme as t } from './styles/theme.js';
-import AppHeader from './components/layout/AppHeader.jsx';
 import { IconWarning, IconChevronLeft } from './components/icons/index.jsx';
-import AppFooter from './components/layout/AppFooter.jsx';
-import { ToastContainer } from './components/common/Toast.jsx';
 import { PageLoader } from './components/common/Spinner.jsx';
 import { useDeploymentHealth } from './hooks/useDeploymentHealth.js';
 
@@ -50,6 +47,9 @@ const LeaderboardPage = lazy(() => import('./pages/LeaderboardPage.jsx'));
 const HelpPage = lazy(() => import('./pages/HelpPage.jsx'));
 const AdminPage = lazy(() => import('./pages/AdminPage.jsx'));
 const ComingSoonPage = lazy(() => import('./pages/ComingSoonPage.jsx'));
+const AppHeader = lazy(() => import('./components/layout/AppHeader.jsx'));
+const AppFooter = lazy(() => import('./components/layout/AppFooter.jsx'));
+const ToastContainer = lazy(() => import('./components/common/Toast.jsx'));
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -90,7 +90,11 @@ export default function App() {
 
   return (
     <div className="app" style={{ background: t.colors.bg.base, minHeight: '100vh' }}>
-      {!isComingSoonView && <AppHeader />}
+      {!isComingSoonView && (
+        <Suspense fallback={null}>
+          <AppHeader />
+        </Suspense>
+      )}
       <main className={isComingSoonView ? '' : 'app-content'}>
         {!isComingSoonView && !deployment.loading && !deployment.ok && (
           <div style={{ maxWidth: 1200, margin: '16px auto 0', padding: '0 16px' }}>
@@ -109,8 +113,17 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       </main>
-      {!isComingSoonView && <AppFooter />}
-      <ToastContainer />
+      {!isComingSoonView && (
+        <Suspense fallback={null}>
+          <AppFooter />
+        </Suspense>
+      )}
+      {!isComingSoonView && (
+        <Suspense fallback={null}>
+          <ToastContainer />
+        </Suspense>
+      )}
     </div>
   );
 }
+

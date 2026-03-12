@@ -1,30 +1,32 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
-import '@rainbow-me/rainbowkit/styles.css';
 import './styles/index.css';
-import { WagmiProvider } from 'wagmi';
-import { RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { wagmiConfig } from './config/wagmi.js';
 import App from './App.jsx';
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 2, staleTime: 10000 } } });
+const AppProviders = lazy(() => import('./providers/AppProviders.jsx'));
+const forceComingSoon = String(import.meta.env.VITE_COMING_SOON || '').toLowerCase() === 'true';
 
-const rkTheme = darkTheme({
-  accentColor:           '#6E54FF',
-  accentColorForeground: '#ffffff',
-  borderRadius:          'medium',
-  fontStack:             'system',
-});
+function BootFallback() {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        background: '#0f0f0f',
+      }}
+    />
+  );
+}
+
+const appNode = forceComingSoon ? (
+  <App />
+) : (
+  <Suspense fallback={<BootFallback />}>
+    <AppProviders>
+      <App />
+    </AppProviders>
+  </Suspense>
+);
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider theme={rkTheme} locale="en-US">
-          <App />
-        </RainbowKitProvider>
-      </QueryClientProvider>
-    </WagmiProvider>
-  </React.StrictMode>
+  <React.StrictMode>{appNode}</React.StrictMode>
 );
