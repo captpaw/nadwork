@@ -245,7 +245,9 @@ export default function BountiesPage() {
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [view, setView]   = useState('grid');
   const [mounted, setMounted] = useState(false);
+  const [showSlowHint, setShowSlowHint] = useState(false);
   const searchRef = useRef(null);
+  const slowHintLoggedRef = useRef(false);
 
   const toggleSkill = (s) => setSelectedSkills(prev =>
     prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]
@@ -256,6 +258,7 @@ export default function BountiesPage() {
     return () => clearTimeout(timer);
   }, []);
 
+
   const normalizedFilters = {
     search:   filters.search,
     category: (filters.category || 'All').toLowerCase(),
@@ -263,7 +266,26 @@ export default function BountiesPage() {
     sort:     SORT_MAP[filters.sort] || 'newest',
   };
 
-  const { bounties = [], total: totalFromHook, loading, error } = useBounties({ ...normalizedFilters, skills: selectedSkills });
+  const { bounties = [], total: totalFromHook, loading, error, refetch } = useBounties({ ...normalizedFilters, skills: selectedSkills });
+
+  useEffect(() => {
+    if (!loading) {
+      setShowSlowHint(false);
+      slowHintLoggedRef.current = false;
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setShowSlowHint(true);
+      if (import.meta.env.DEV && !slowHintLoggedRef.current) {
+        slowHintLoggedRef.current = true;
+        console.warn('[BountiesPage] load is slower than expected; waiting for network/indexer response');
+      }
+    }, 3500);
+
+    return () => clearTimeout(timer);
+  }, [loading]);
+
 
   // Derive sidebar counts from data already fetched — no second hook call
   const sidebarCounts = {
@@ -474,13 +496,27 @@ export default function BountiesPage() {
 
           {/* Content */}
           {loading ? (
-            <div style={{ paddingTop: 60 }}><PageLoader /></div>
+            <div style={{ paddingTop: 60 }}>
+              <PageLoader message={showSlowHint ? 'Syncing bounty data from chain/indexer...' : 'Loading...'} />
+              {showSlowHint && (
+                <div style={{
+                  marginTop: -24,
+                  textAlign: 'center',
+                  fontFamily: theme.fonts.mono,
+                  fontSize: 11,
+                  color: theme.colors.text.muted,
+                  letterSpacing: '0.04em',
+                }}>
+                  Network is taking longer than usual. Auto-retry is active.
+                </div>
+              )}
+            </div>
           ) : error ? (
             <EmptyState
               icon={<IconWarning size={32} color={theme.colors.amber} />}
               title="Failed to load bounties"
               message={error || 'Could not fetch from the contract. Please try again.'}
-              action={() => window.location.reload()}
+              action={() => { void refetch?.(); }}
               actionLabel="Retry"
             />
           ) : bounties.length === 0 ? (
@@ -693,5 +729,4 @@ function ListRow({ bounty, last, onClick }) {
     </div>
   );
 }
-
 
