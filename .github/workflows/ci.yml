@@ -1,0 +1,36 @@
+name: CI Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate-check:
+    name: Build and Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps --ignore-scripts
+
+      - name: Frontend build
+        run: npm run frontend:build
+
+      - name: Orbital selector tests
+        run: npm run frontend:test:orbital
+
+      - name: Hardhat tests
+        run: npm test
