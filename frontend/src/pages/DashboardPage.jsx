@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAccount } from 'wagmi';
 import { theme } from '../styles/theme';
 import Button from '../components/common/Button';
@@ -13,7 +13,7 @@ import { hasIndexer, querySubgraph, GQL_GET_CREATOR_BOUNTIES } from '../hooks/us
 import { ADDRESSES, FACTORY_ABI } from '../config/contracts';
 import { getReadContractFast } from '../utils/ethers';
 import { getFactoryCapabilities } from '../utils/factoryCapabilities';
-import { getResolvedRegistryContract } from '../utils/registry.js';
+import { getCachedBountySnapshots, getResolvedRegistryContract } from '../utils/registry.js';
 import { toast } from '../utils/toast';
 
 const BOUNTY_STATUS = { 0: 'active', 1: 'reviewing', 2: 'completed', 3: 'expired', 4: 'cancelled', 5: 'disputed' };
@@ -44,9 +44,27 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-// ── App status map ────────────────────────────────────────────────────────────
+// Application status map
 const APP_STATUS_MAP = { 0: 'pending', 1: 'approved', 2: 'rejected' };
 function normAppStatus(s) { return s == null ? 'pending' : APP_STATUS_MAP[Number(s)] || 'pending'; }
+function asNumber(value) {
+  if (value == null) return 0;
+  try {
+    return Number(BigInt(value));
+  } catch {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+}
+function parseTs(value) {
+  if (value == null) return 0;
+  try {
+    return Number(BigInt(value));
+  } catch {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+}
 
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
@@ -59,6 +77,9 @@ export default function DashboardPage() {
   const [myBounties,   setMyBounties]  = useState([]);
   const [, setBountiesLoading] = useState(false);
   const [submissionBounties, setSubmissionBounties] = useState({});
+  const [postedSort, setPostedSort] = useState('newest');
+  const [submissionSort, setSubmissionSort] = useState('newest');
+  const [applicationSort, setApplicationSort] = useState('newest');
 
   // Fetch creator bounty details (title, reward, status)
   useEffect(() => {
@@ -71,7 +92,7 @@ export default function DashboardPage() {
     setBountiesLoading(true);
 
     const load = async () => {
-      const fallbackRows = bountyIds.map((id) => ({ id: String(id), title: null, totalReward: null, status: null }));
+      const fallbackRows = bountyIds.map((id) => ({ id: String(id), title: null, totalReward: null, status: null, createdAt: null }));
 
       try {
         const { contract: reg } = await getResolvedRegistryContract();
@@ -80,16 +101,17 @@ export default function DashboardPage() {
           return;
         }
 
-        const rows = await Promise.all(bountyIds.map((bid) => reg.getBounty(bid).catch(() => null)));
+        const rowMap = await getCachedBountySnapshots(reg, bountyIds);
         if (cancelled) return;
 
-        setMyBounties(bountyIds.map((id, i) => {
-          const b = rows[i];
+        setMyBounties(bountyIds.map((id) => {
+          const b = rowMap[String(id)] ?? null;
           return {
             id: String(id),
             title: b?.title || null,
             totalReward: b?.totalReward ?? null,
             status: b?.status != null ? Number(b.status) : null,
+            createdAt: b?.createdAt != null ? asNumber(b.createdAt) : null,
           };
         }));
       } catch {
@@ -140,6 +162,7 @@ export default function DashboardPage() {
             title: b.title || row.title || null,
             totalReward: b.totalReward ?? row.totalReward ?? null,
             status: b.status != null ? b.status : (row.status != null ? Number(row.status) : null),
+            createdAt: b.createdAt ?? (row.createdAt != null ? asNumber(row.createdAt) : null),
           };
 
           if (merged.title !== b.title || merged.totalReward !== b.totalReward || merged.status !== b.status) {
@@ -166,12 +189,12 @@ export default function DashboardPage() {
         if (!reg) return;
 
         const uniqueIds = [...new Set(submissions.map((s) => String(s.bountyId)))];
-        const rows = await Promise.all(uniqueIds.map((bid) => reg.getBounty(bid).catch(() => null)));
+        const rowMap = await getCachedBountySnapshots(reg, uniqueIds);
         if (cancelled) return;
 
         const map = {};
-        uniqueIds.forEach((id, i) => {
-          const b = rows[i];
+        uniqueIds.forEach((id) => {
+          const b = rowMap[String(id)] ?? null;
           map[id] = b ? { title: b.title, totalReward: b.totalReward } : null;
         });
         setSubmissionBounties(map);
@@ -211,7 +234,7 @@ export default function DashboardPage() {
     return () => { cancelled = true; };
   }, [address]);
 
-  // Map raw hook data → display shape
+  // Map raw hook data -> display shape
   const profile = (builderStats || creatorStats) ? {
     totalEarned:    formatMon(builderStats?.totalEarned ?? builderStats?.[2]),
     completedCount: Number(builderStats?.winCount       ?? builderStats?.[1] ?? 0),
@@ -226,6 +249,39 @@ export default function DashboardPage() {
     else if (result?.error) toast(result.error, 'error');
   };
 
+  const postedRows = myBounties.length > 0
+    ? myBounties
+    : (bountyIds?.map(id => ({ id: String(id), title: null, totalReward: null, status: null })) || []);
+
+  const sortedPostedRows = useMemo(() => {
+    const list = [...postedRows];
+    list.sort((a, b) => {
+      const ta = parseTs(a.createdAt) || Number(a.id) || 0;
+      const tb = parseTs(b.createdAt) || Number(b.id) || 0;
+      return postedSort === 'oldest' ? ta - tb : tb - ta;
+    });
+    return list;
+  }, [postedRows, postedSort]);
+
+  const sortedApplications = useMemo(() => {
+    const list = [...myApplications];
+    list.sort((a, b) => {
+      const ta = parseTs(a.appliedAt) || Number(a.id) || 0;
+      const tb = parseTs(b.appliedAt) || Number(b.id) || 0;
+      return applicationSort === 'oldest' ? ta - tb : tb - ta;
+    });
+    return list;
+  }, [myApplications, applicationSort]);
+
+  const sortedSubmissions = useMemo(() => {
+    const list = [...submissions];
+    list.sort((a, b) => {
+      const ta = parseTs(a.submittedAt) || Number(a.id) || 0;
+      const tb = parseTs(b.submittedAt) || Number(b.id) || 0;
+      return submissionSort === 'oldest' ? ta - tb : tb - ta;
+    });
+    return list;
+  }, [submissions, submissionSort]);
   if (!isConnected) {
     return (
       <div style={{ maxWidth: 600, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
@@ -242,9 +298,6 @@ export default function DashboardPage() {
 
   if (loading) return <PageLoader />;
 
-  const postedRows = myBounties.length > 0
-    ? myBounties
-    : (bountyIds?.map(id => ({ id: String(id), title: null, totalReward: null, status: null })) || []);
 
   const stats = [
     { label: 'MON Earned',    value: `${profile?.totalEarned ?? '0'}`,            sub: 'all time',          accent: theme.colors.primary },
@@ -252,6 +305,19 @@ export default function DashboardPage() {
     { label: 'Total Posted',  value: profile?.postedCount    ?? bountyIds.length,  sub: 'as creator'         },
     { label: 'Submissions',   value: submissions.length,                           sub: 'total submitted'    },
   ];
+  const sortSelectStyle = {
+    height: 30,
+    padding: '0 10px',
+    background: theme.colors.bg.input,
+    color: theme.colors.text.secondary,
+    border: `1px solid ${theme.colors.border.default}`,
+    borderRadius: theme.radius.md,
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase',
+    outline: 'none',
+  };
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: 'clamp(32px,5vw,64px) clamp(16px,4vw,48px)' }}>
@@ -261,7 +327,7 @@ export default function DashboardPage() {
           <div className="page-eyebrow">My Dashboard</div>
           <h1 className="page-title">Overview</h1>
           <div style={{ fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.muted, marginTop: 4 }}>
-            {address?.slice(0, 6)}…{address?.slice(-4)}
+            {address?.slice(0, 6)}...{address?.slice(-4)}
           </div>
         </div>
         <Button variant="primary" size="sm" onClick={() => { window.location.hash = '#/post'; }}>
@@ -269,7 +335,7 @@ export default function DashboardPage() {
         </Button>
       </div>
 
-      {/* Claim section — prominent when user has pending payouts */}
+      {/* Claim section - prominent when user has pending payouts */}
       {hasPending && (
         <div className="dashboard-claim-section" style={{
           padding: '18px 20px', marginBottom: 24,
@@ -297,29 +363,29 @@ export default function DashboardPage() {
                   claims.timeoutPayout > 0n && `Timeout: ${fmtMon(claims.timeoutPayout)} MON`,
                   claims.stakeRefund > 0n && `Stake refund: ${fmtMon(claims.stakeRefund)} MON`,
                   claims.disputeRefund > 0n && `Dispute deposit: ${fmtMon(claims.disputeRefund)} MON`,
-                ].filter(Boolean).join(' · ')}
+                ].filter(Boolean).join(' | ')}
               </div>
             </div>
           </div>
           <div className="dashboard-claim-btns" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {claims.cancelComp > 0n && (
               <Button variant="amber" size="sm" onClick={() => handleClaim('cancelComp')} disabled={!!claiming}>
-                {claiming === 'cancelComp' ? 'Claiming…' : `Claim comp ${fmtMon(claims.cancelComp)} MON`}
+                {claiming === 'cancelComp' ? 'Claiming...' : `Claim comp ${fmtMon(claims.cancelComp)} MON`}
               </Button>
             )}
             {claims.timeoutPayout > 0n && (
               <Button variant="amber" size="sm" onClick={() => handleClaim('timeoutPayout')} disabled={!!claiming}>
-                {claiming === 'timeoutPayout' ? 'Claiming…' : `Claim payout ${fmtMon(claims.timeoutPayout)} MON`}
+                {claiming === 'timeoutPayout' ? 'Claiming...' : `Claim payout ${fmtMon(claims.timeoutPayout)} MON`}
               </Button>
             )}
             {claims.stakeRefund > 0n && (
               <Button variant="amber" size="sm" onClick={() => handleClaim('stakeRefund')} disabled={!!claiming}>
-                {claiming === 'stakeRefund' ? 'Claiming…' : `Claim stake ${fmtMon(claims.stakeRefund)} MON`}
+                {claiming === 'stakeRefund' ? 'Claiming...' : `Claim stake ${fmtMon(claims.stakeRefund)} MON`}
               </Button>
             )}
             {claims.disputeRefund > 0n && (
               <Button variant="amber" size="sm" onClick={() => handleClaim('disputeRefund')} disabled={!!claiming}>
-                {claiming === 'disputeRefund' ? 'Claiming…' : `Claim deposit ${fmtMon(claims.disputeRefund)} MON`}
+                {claiming === 'disputeRefund' ? 'Claiming...' : `Claim deposit ${fmtMon(claims.disputeRefund)} MON`}
               </Button>
             )}
           </div>
@@ -357,14 +423,35 @@ export default function DashboardPage() {
         ))}
       </div>
 
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        {tab === 'posted' && sortedPostedRows.length > 1 && (
+          <select value={postedSort} onChange={(e) => setPostedSort(e.target.value)} style={sortSelectStyle}>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        )}
+        {tab === 'submissions' && sortedSubmissions.length > 1 && (
+          <select value={submissionSort} onChange={(e) => setSubmissionSort(e.target.value)} style={sortSelectStyle}>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        )}
+        {tab === 'applications' && sortedApplications.length > 1 && (
+          <select value={applicationSort} onChange={(e) => setApplicationSort(e.target.value)} style={sortSelectStyle}>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        )}
+      </div>
       {/* Tab content */}
       {tab === 'posted' && (
-        postedRows.length === 0 ? (
+        sortedPostedRows.length === 0 ? (
           <EmptyState icon={<IconBounties size={32} color={theme.colors.text.faint} />} title="No bounties posted" message="Post your first bounty to start receiving submissions." action={() => { window.location.hash = '#/post'; }} actionLabel="Post a Bounty" />
         ) : (
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {postedRows.map(b => (
+            {sortedPostedRows.map(b => (
               <div
                 key={String(b.id)}
                 onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
@@ -400,11 +487,11 @@ export default function DashboardPage() {
 
       {tab === 'applications' && (
         appsLoading ? <PageLoader /> :
-        myApplications.length === 0 ? (
+        sortedApplications.length === 0 ? (
           <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No applications yet" message="Apply to curated projects to appear here." action={() => { window.location.hash = '#/bounties'; }} actionLabel="Browse Bounties" />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {myApplications.map(app => {
+            {sortedApplications.map(app => {
               const appStatus = normAppStatus(app.status);
               const statusColor = appStatus === 'approved' ? theme.colors.green[400] : appStatus === 'rejected' ? theme.colors.red[400] : theme.colors.amber;
               const statusBg = appStatus === 'approved' ? theme.colors.green.dim : appStatus === 'rejected' ? theme.colors.red.dim : theme.colors.amberDim;
@@ -454,11 +541,11 @@ export default function DashboardPage() {
       )}
 
       {tab === 'submissions' && (
-        submissions.length === 0 ? (
+        sortedSubmissions.length === 0 ? (
           <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No submissions yet" message="Find a bounty and submit your work to start earning." action={() => { window.location.hash = '#/bounties'; }} actionLabel="Browse Bounties" />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {submissions.map(s => {
+            {sortedSubmissions.map(s => {
               const bountyInfo = submissionBounties[String(s.bountyId)];
               const bountyTitle = bountyInfo?.title || s.bountyTitle || `Bounty #${s.bountyId}`;
               const isApproved = normSubStatus(s.status) === 'approved';
@@ -516,6 +603,12 @@ export default function DashboardPage() {
     </div>
   );
 }
+
+
+
+
+
+
 
 
 

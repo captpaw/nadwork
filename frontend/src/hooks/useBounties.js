@@ -11,18 +11,172 @@ import {
   GQL_GET_ACTIVE_BOUNTIES,
   GQL_GET_BOUNTIES,
 } from './useIndexer.js';
-import { clearRegistryResolutionCache, getResolvedRegistryContract, listCreatorBountyIds } from '@/utils/registry.js';
+import {
+  clearRegistryResolutionCache,
+  getCachedBountySnapshot,
+  getResolvedRegistryContract,
+  listCreatorBountyIds,
+} from '@/utils/registry.js';
 import { getBountyId, readBountyField } from '@/utils/orbital.mjs';
 import { applyRequiresApplicationCompatibility, getFactoryCapabilities } from '@/utils/factoryCapabilities.js';
 
 const STATUS_MAP = { active: 0n, reviewing: 1n, completed: 2n, expired: 3n, cancelled: 4n, disputed: 5n };
 const LIMIT = 20;
-const RETRY_DELAY_MS = 1800;
+const RETRY_DELAY_MS = 1200;
+const MAX_RETRY_DELAY_MS = 10000;
 const JUST_POSTED_KEY = 'nw_bounty_just_posted';
 const JUST_POSTED_MAX_AGE_MS = 10 * 60 * 1000;
-const TRANSIENT_EMPTY_RETRY_LIMIT = 6;
+const TRANSIENT_EMPTY_RETRY_LIMIT = 2;
+const BOUNTIES_CACHE_VERSION = 1;
+const BOUNTIES_CACHE_PREFIX = `nw_bounties_cache_v${BOUNTIES_CACHE_VERSION}:`;
+const BOUNTIES_DEFAULT_SNAPSHOT_KEY = `${BOUNTIES_CACHE_PREFIX}default`;
+const BOUNTIES_CACHE_TTL_MS = 2 * 60 * 1000;
 
 let lastJustPostedCacheBustTs = 0;
+
+function getBountiesStorage() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function shouldUseDefaultBountiesSnapshot(filters = {}) {
+  return (
+    Number(filters?.page ?? 0) === 0 &&
+    String(filters?.category || 'all').toLowerCase() === 'all' &&
+    ['all', 'open', 'active'].includes(String(filters?.status || 'all').toLowerCase()) &&
+    String(filters?.sort || 'newest').toLowerCase() === 'newest' &&
+    !String(filters?.search || '').trim() &&
+    (!Array.isArray(filters?.skills) || filters.skills.length === 0)
+  );
+}
+
+function getBountiesCacheKey(filters = {}) {
+  const keyParts = [
+    String(filters?.category || 'all').toLowerCase(),
+    String(filters?.status || 'all').toLowerCase(),
+    String(filters?.sort || 'newest').toLowerCase(),
+    String(filters?.search || '').trim().toLowerCase(),
+    Array.isArray(filters?.skills) ? filters.skills.map((s) => String(s).toLowerCase()).sort().join(',') : '',
+    String(filters?.page ?? 0),
+  ];
+  return `${BOUNTIES_CACHE_PREFIX}${keyParts.join('|')}`;
+}
+
+/** JSON.stringify replacer: BigInt is not natively supported, convert to string. */
+function bigIntReplacer(_, v) {
+  return typeof v === 'bigint' ? v.toString() : v;
+}
+
+function serializeBountiesForCache(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => {
+    // Pick only cache-relevant fields; avoid spreading raw row (may contain BigInt).
+    return {
+      id: item?.id != null ? String(item.id) : '0',
+      createdAt: item?.createdAt != null ? String(item.createdAt) : '0',
+      totalReward: item?.totalReward != null ? String(item.totalReward) : '0',
+      deadline: item?.deadline != null ? String(item.deadline) : '0',
+      status: Number(item?.status ?? 0),
+      winnerCount: Number(item?.winnerCount ?? 1),
+      submissionCount: Number(item?.submissionCount ?? 0),
+      featured: toBoolSafe(item?.featured, false),
+      requiresApplication: toBoolSafe(item?.requiresApplication, false),
+      creator: toStringSafe(item?.creator, ''),
+      ipfsHash: toStringSafe(item?.ipfsHash, ''),
+      metaCid: toStringSafe(item?.metaCid, ''),
+      title: toStringSafe(item?.title, ''),
+      category: toStringSafe(item?.category, 'other'),
+      description: toStringSafe(item?.description, ''),
+    };
+  });
+}
+
+function normalizeCachedBounty(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    ...raw,
+    id: toBigIntSafe(raw.id, 0n),
+    createdAt: toBigIntSafe(raw.createdAt, 0n),
+    totalReward: toBigIntSafe(raw.totalReward, 0n),
+    deadline: toBigIntSafe(raw.deadline, 0n),
+    status: toNumberSafe(raw.status, 0),
+    winnerCount: toNumberSafe(raw.winnerCount, 1),
+    submissionCount: toNumberSafe(raw.submissionCount, 0),
+    featured: toBoolSafe(raw.featured, false),
+    requiresApplication: toBoolSafe(raw.requiresApplication, false),
+  };
+}
+
+function readBountiesCache(cacheKey, filters = {}) {
+  const storage = getBountiesStorage();
+  if (!storage || !cacheKey) return null;
+
+  const keysToTry = [cacheKey];
+  if (shouldUseDefaultBountiesSnapshot(filters) && cacheKey !== BOUNTIES_DEFAULT_SNAPSHOT_KEY) {
+    keysToTry.push(BOUNTIES_DEFAULT_SNAPSHOT_KEY);
+  }
+
+  for (const key of keysToTry) {
+    try {
+      const raw = storage.getItem(key);
+      if (!raw) continue;
+
+      const parsed = JSON.parse(raw);
+      const createdAt = Number(parsed?.createdAt ?? 0);
+      if (!createdAt || Date.now() - createdAt > BOUNTIES_CACHE_TTL_MS) {
+        storage.removeItem(key);
+        continue;
+      }
+
+      const items = Array.isArray(parsed?.items)
+        ? parsed.items.map(normalizeCachedBounty).filter(Boolean)
+        : [];
+
+      return {
+        items,
+        total: toNumberSafe(parsed?.total, items.length),
+        hasMore: toBoolSafe(parsed?.hasMore, false),
+      };
+    } catch {
+      try {
+        storage.removeItem(key);
+      } catch {
+        // ignore storage cleanup failure
+      }
+    }
+  }
+
+  return null;
+}
+
+function writeBountiesCache(cacheKey, payload, filters = {}) {
+  const storage = getBountiesStorage();
+  if (!storage || !cacheKey || !payload) return;
+
+  const record = JSON.stringify(
+    {
+      version: BOUNTIES_CACHE_VERSION,
+      createdAt: Date.now(),
+      total: toNumberSafe(payload?.total, Array.isArray(payload?.items) ? payload.items.length : 0),
+      hasMore: toBoolSafe(payload?.hasMore, false),
+      items: serializeBountiesForCache(payload?.items),
+    },
+    bigIntReplacer
+  );
+
+  try {
+    storage.setItem(cacheKey, record);
+    if (shouldUseDefaultBountiesSnapshot(filters)) {
+      storage.setItem(BOUNTIES_DEFAULT_SNAPSHOT_KEY, record);
+    }
+  } catch {
+    // ignore storage quota / access failures
+  }
+}
 
 function clearJustPostedHint() {
   try {
@@ -210,7 +364,7 @@ function ensurePostedHintVisible(items, postedHint, filters) {
 function normalizeBountiesError(err) {
   const msg = err?.shortMessage || err?.reason || err?.message || 'Unknown error';
   if (err?.code === 'BAD_DATA' && /get(AllBounties|ActiveBounties|BountiesByCategory)/.test(msg)) {
-    return 'Registry contract tidak cocok dengan RPC/network aktif. Periksa VITE_RPC_URL dan VITE_BOUNTY_REGISTRY_ADDRESS.';
+    return 'Registry contract does not match the active RPC/network. Check VITE_RPC_URL and VITE_BOUNTY_REGISTRY_ADDRESS.';
   }
   return msg;
 }
@@ -350,19 +504,20 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
   const inFlightRef = useRef(false);
   const queuedReloadRef = useRef(false);
   const transientEmptyRetryRef = useRef(0);
+  const transientRetryCountRef = useRef(0);
 
   const stableSkills = useMemo(() => {
     const raw = normalizeSkills(skills);
     return raw;
   }, [JSON.stringify(normalizeSkills(skills))]);
 
-  const scheduleSoftRetry = useCallback(() => {
+  const scheduleSoftRetry = useCallback((delayMs = RETRY_DELAY_MS) => {
     if (retryTimerRef.current) return;
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
       const fn = loadRef.current;
       if (fn) void fn();
-    }, RETRY_DELAY_MS);
+    }, delayMs);
   }, []);
 
   const load = useCallback(async () => {
@@ -382,6 +537,9 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
     let resolvedRegistryAddress = ADDRESSES.registry || '';
     let keepLoading = false;
     let postedHint = null;
+    let hydratedCacheCount = 0;
+    const cacheFilters = { category, status, sort, search, skills: stableSkills, page };
+    const cacheKey = getBountiesCacheKey(cacheFilters);
     try {
       postedHint = readJustPostedHint();
       if (postedHint?.posted && postedHint.ts !== lastJustPostedCacheBustTs) {
@@ -394,8 +552,27 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       postedHint = null;
     }
     try {
-      setLoading(true);
       setError(null);
+
+      // Hydrate from cache first if we have nothing yet.
+      if (bountyCountRef.current === 0) {
+        const cached = readBountiesCache(cacheKey, cacheFilters);
+        if (cached && Array.isArray(cached.items) && cached.items.length > 0) {
+          hydratedCacheCount = cached.items.length;
+          bountyCountRef.current = cached.items.length;
+          setBounties(cached.items);
+          setTotal(cached.total);
+          setHasMore(cached.hasMore);
+        }
+      }
+
+      // Only show loading spinner when we have no data to display (initial load).
+      // Background refresh / retry keeps existing list visible and responsive.
+      const hasExistingData = bountyCountRef.current > 0;
+      if (!hasExistingData) {
+        setLoading(true);
+      }
+
       const offset = page * LIMIT;
       const factoryCaps = await getFactoryCapabilities();
       const indexerConfigured = isIndexerConfigured();
@@ -431,9 +608,10 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
             requiresApplication: normalizeRequiresApplication(b.requiresApplication, factoryCaps),
           }));
 
-          // Fast freshness fallback: merge first-page on-chain rows so newly posted bounty
-          // can appear immediately even if indexer is still catching up.
-          if (page === 0) {
+          // Fast freshness fallback: merge first-page on-chain rows only when needed.
+          // This avoids an extra RPC hit on every initial page load.
+          const shouldMergeOnchainRows = page === 0 && (Boolean(postedHint?.posted) || items.length === 0);
+          if (shouldMergeOnchainRows) {
             try {
               const resolved = await getResolvedRegistryContract();
               const reg = resolved.contract;
@@ -451,7 +629,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
 
                 if (postedHint?.bountyId) {
                   try {
-                    const postedRow = await reg.getBounty(BigInt(postedHint.bountyId));
+                    const postedRow = await getCachedBountySnapshot(reg, BigInt(postedHint.bountyId));
                     const posted = normalizeRegistryBounty(postedRow, factoryCaps);
                     const key = String(posted.id);
                     if (key && key !== '0') {
@@ -517,6 +695,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
           if (items.length > 0) {
             transientEmptyRetryRef.current = 0;
           }
+          transientRetryCountRef.current = 0;
 
           if (hintResult.found || (postedHint?.posted && !postedHint.bountyId)) {
             clearJustPostedHint();
@@ -525,20 +704,14 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
           setBounties(items);
           setTotal(items.length);
           setHasMore(items.length >= LIMIT);
+          writeBountiesCache(cacheKey, { items, total: items.length, hasMore: items.length >= LIMIT }, cacheFilters);
           return;
         }
-
-        // Subgraph temporarily unavailable: keep previous state and avoid noisy RPC fallback.
+        // Subgraph temporarily unavailable: fallback to RPC path.
+        // This avoids long blank/syncing state when indexer is rate-limited.
         if (import.meta.env.DEV) {
-          console.warn('[useBounties] subgraph unavailable, keeping previous list state');
+          console.warn('[useBounties] subgraph unavailable, falling back to RPC path');
         }
-
-        // First-load guard: do not show "0 results" flicker; keep loading and retry shortly.
-        if (bountyCountRef.current === 0) {
-          keepLoading = true;
-          scheduleSoftRetry();
-        }
-        return;
       }
 
       // RPC path is used when indexer is unavailable or right after a successful post.
@@ -571,7 +744,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       result = (result || []).map((row) => normalizeRegistryBounty(row, factoryCaps));
       if (postedHint?.bountyId && page === 0) {
         try {
-          const postedRow = await reg.getBounty(BigInt(postedHint.bountyId));
+          const postedRow = await getCachedBountySnapshot(reg, BigInt(postedHint.bountyId));
           const posted = normalizeRegistryBounty(postedRow, factoryCaps);
           const key = String(posted.id || '');
           if (key && key !== '0') {
@@ -628,18 +801,22 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       }
 
       setBounties(filtered);
+      transientRetryCountRef.current = 0;
 
       const serverTotal = Number(totalCount);
       if ((status !== 'all' && status !== 'active' && status !== 'open') || search.trim() || stableSkills.length > 0) {
         setTotal(filtered.length);
         setHasMore(result.length === LIMIT); // more pages might still have matches
+        writeBountiesCache(cacheKey, { items: filtered, total: filtered.length, hasMore: result.length === LIMIT }, cacheFilters);
       } else {
         setTotal(serverTotal);
         setHasMore(offset + LIMIT < serverTotal);
+        writeBountiesCache(cacheKey, { items: filtered, total: serverTotal, hasMore: offset + LIMIT < serverTotal }, cacheFilters);
       }
     } catch (err) {
       const msg = normalizeBountiesError(err);
       const isExpectedRpcNoise = /429|Too Many Requests|missing revert data|could not decode result data|could not coalesce error|Registry: not found/i.test(String(msg));
+      const hasVisibleData = Math.max(bountyCountRef.current, hydratedCacheCount) > 0;
 
       if (String(msg).includes('429')) {
         invalidateContractCache(resolvedRegistryAddress || ADDRESSES.registry);
@@ -650,9 +827,13 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
       }
       setError(isExpectedRpcNoise ? null : msg);
 
-      if (isExpectedRpcNoise && bountyCountRef.current === 0) {
-        keepLoading = true;
-        scheduleSoftRetry();
+      if (isExpectedRpcNoise) {
+        transientRetryCountRef.current += 1;
+        const retryDelay = Math.min(RETRY_DELAY_MS * (2 ** Math.max(transientRetryCountRef.current - 1, 0)), MAX_RETRY_DELAY_MS);
+        scheduleSoftRetry(retryDelay);
+        if (!hasVisibleData) {
+          keepLoading = true;
+        }
       }
     } finally {
       inFlightRef.current = false;
@@ -681,6 +862,7 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
 
   useEffect(() => {
     transientEmptyRetryRef.current = 0;
+    transientRetryCountRef.current = 0;
   }, [category, status, search, stableSkills, page]);
 
   useEffect(() => {
@@ -734,6 +916,27 @@ export function useBounties({ category = 'all', status = 'all', sort = 'newest',
 
   return { bounties, total, hasMore, loading, error, refetch: load };
 }
+
+/** Clear localStorage bounties cache so next load fetches fresh data. Call after post/approve/reject. */
+export function invalidateBountiesCache() {
+  try {
+    const storage = getBountiesStorage();
+    if (!storage) return;
+    const keysToRemove = [];
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (key && key.startsWith(BOUNTIES_CACHE_PREFIX)) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((k) => storage.removeItem(k));
+  } catch {
+    // ignore
+  }
+}
+
+
+
+
+
 
 
 

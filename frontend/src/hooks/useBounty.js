@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invalidateContractCache } from '@/utils/ethers.js';
 import { ADDRESSES } from '@/config/contracts.js';
 import { fetchJSON } from '@/config/pinata.js';
-import { getResolvedRegistryContract } from '@/utils/registry.js';
+import { getCachedBountySnapshot, getResolvedRegistryContract } from '@/utils/registry.js';
 import { getBountyId, readBountyField } from '@/utils/orbital.mjs';
 import { hasIndexer, querySubgraph, GQL_GET_BOUNTY_BY_ID } from './useIndexer.js';
 import { applyRequiresApplicationCompatibility, getFactoryCapabilities } from '@/utils/factoryCapabilities.js';
@@ -140,7 +140,10 @@ export function useBounty(bountyId) {
         resolvedRegistryAddress = address || resolvedRegistryAddress;
         if (!reg) throw new Error('Registry contract not found.');
 
-        const [b, subs] = await Promise.all([reg.getBounty(id), reg.getBountySubmissions(id)]);
+        const [b, subs] = await Promise.all([
+          getCachedBountySnapshot(reg, id),
+          reg.getBountySubmissions(id),
+        ]);
         if (!mountedRef.current) return;
 
         if (!b || b.creator === '0x0000000000000000000000000000000000000000') {
@@ -271,4 +274,5 @@ export function useBounty(bountyId) {
 
   return { bounty, meta, submissions, loading, error, refetch: loadBounty };
 }
+
 

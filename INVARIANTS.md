@@ -42,6 +42,8 @@ Jika escrow.isSettled(bountyId) == true:
 Jika bounty.status == COMPLETED:
   THEN escrow.isSettled(bountyId) == true
   AND  bounty.winners.length >= 1
+  AND  untuk setiap submission bounty tersebut: submissionStakes[bountyId][builder] == 0
+       (stake winner dan non-winner di-refund di approveWinners)
 
 Jika bounty.status == CANCELLED atau EXPIRED:
   THEN escrow.isSettled(bountyId) == true

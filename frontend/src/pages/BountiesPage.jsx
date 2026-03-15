@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { theme } from '../styles/theme';
 import BountyCard from '../components/bounty/BountyCard';
-import { PageLoader } from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import { useBounties } from '../hooks/useBounties';
 import { NETWORK_LABEL } from '../config/network.js';
-import { IconArrowDown, IconTarget, IconClock, IconGrid, IconList, IconX, IconWarning, IconBounties } from '../components/icons';
+import { IconArrowDown, IconTarget, IconClock, IconGrid, IconList, IconX, IconWarning, IconBounties, IconSearch } from '../components/icons';
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const CATEGORIES  = ['All', 'Dev', 'Design', 'Content', 'Research', 'Other'];
 const STATUSES    = ['Open', 'History', 'All', 'Active', 'Reviewing', 'Completed', 'Expired', 'Cancelled'];
 const TOP_SKILLS  = [
@@ -37,7 +36,7 @@ const CAT_COLORS = {
 
 const getCatStyle = (cat) => CAT_COLORS[(cat || 'other').toLowerCase()] || CAT_COLORS.other;
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// â”€â”€ Sub-components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function FilterPill({ label, active, color, onClick }) {
   const [hov, setHov] = useState(false);
   const activeColor = color || theme.colors.primary;
@@ -121,7 +120,63 @@ function ViewToggle({ view, onChange }) {
   );
 }
 
-// ── Sidebar filter panel ──────────────────────────────────────────────────────
+function BountyCardSkeleton({ view = 'grid' }) {
+  const cardBase = {
+    background: theme.colors.bg.card,
+    border: `1px solid ${theme.colors.border.subtle}`,
+    borderRadius: theme.radius.xl,
+    overflow: 'hidden',
+  };
+
+  if (view === 'list') {
+    return (
+      <div
+        style={{
+          ...cardBase,
+          display: 'grid',
+          gridTemplateColumns: '1fr 110px 90px 80px',
+          gap: 8,
+          padding: '16px 20px',
+          alignItems: 'center',
+        }}
+      >
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <span className="bounty-skeleton-line" style={{ width: 68, height: 20, borderRadius: 999 }} />
+            <span className="bounty-skeleton-line" style={{ width: 58, height: 20, borderRadius: 999 }} />
+          </div>
+          <span className="bounty-skeleton-line" style={{ width: '72%', height: 18, display: 'block', marginBottom: 8 }} />
+          <span className="bounty-skeleton-line" style={{ width: '48%', height: 12, display: 'block' }} />
+        </div>
+        <span className="bounty-skeleton-line" style={{ width: 72, height: 18 }} />
+        <span className="bounty-skeleton-line" style={{ width: 58, height: 14 }} />
+        <span className="bounty-skeleton-line" style={{ width: 42, height: 14 }} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...cardBase, padding: 20, minHeight: 236 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+        <span className="bounty-skeleton-line" style={{ width: 68, height: 20, borderRadius: 999 }} />
+        <span className="bounty-skeleton-line" style={{ width: 58, height: 20, borderRadius: 999 }} />
+      </div>
+      <span className="bounty-skeleton-line" style={{ width: '78%', height: 22, display: 'block', marginBottom: 10 }} />
+      <span className="bounty-skeleton-line" style={{ width: '56%', height: 22, display: 'block', marginBottom: 18 }} />
+      <span className="bounty-skeleton-line" style={{ width: '100%', height: 13, display: 'block', marginBottom: 8 }} />
+      <span className="bounty-skeleton-line" style={{ width: '86%', height: 13, display: 'block', marginBottom: 26 }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <div>
+          <span className="bounty-skeleton-line" style={{ width: 72, height: 24, display: 'block', marginBottom: 6 }} />
+          <span className="bounty-skeleton-line" style={{ width: 110, height: 12, display: 'block' }} />
+        </div>
+        <span className="bounty-skeleton-line" style={{ width: 64, height: 12 }} />
+      </div>
+    </div>
+  );
+}
+
+// â”€â”€ Sidebar filter panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillToggle, onClearSkills }) {
   const { category = 'All', status = 'Open' } = filters;
   const update = (key, val) => onChange({ ...filters, [key]: val });
@@ -218,9 +273,9 @@ function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillTogg
           borderRadius: theme.radius.lg,
         }}>
           {[
-            { label: 'Total',     val: counts.total     ?? '—' },
-            { label: 'Active',    val: counts.active    ?? '—' },
-            { label: 'Completed', val: counts.completed ?? '—' },
+            { label: 'Total',     val: counts.total     ?? '-' },
+            { label: 'Active',    val: counts.active    ?? '-' },
+            { label: 'Completed', val: counts.completed ?? '-' },
           ].map(({ label, val }) => (
             <div key={label} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -237,11 +292,12 @@ function SidebarFilters({ filters, onChange, counts, selectedSkills, onSkillTogg
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+// â”€â”€ Main page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function BountiesPage() {
   const [filters, setFilters] = useState({
     search: '', category: 'All', status: 'Open', sort: 'newest',
   });
+  const [searchInput, setSearchInput] = useState('');
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [view, setView]   = useState('grid');
   const [mounted, setMounted] = useState(false);
@@ -257,6 +313,14 @@ export default function BountiesPage() {
     const timer = setTimeout(() => setMounted(true), 40);
     return () => clearTimeout(timer);
   }, []);
+
+  // Debounce search input to reduce re-fetch churn while typing.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFilters((prev) => (prev.search === searchInput ? prev : { ...prev, search: searchInput }));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
 
   const normalizedFilters = {
@@ -287,15 +351,24 @@ export default function BountiesPage() {
   }, [loading]);
 
 
-  // Derive sidebar counts from data already fetched — no second hook call
+  // Derive sidebar counts from data already fetched â€” no second hook call
   const sidebarCounts = {
     total:     totalFromHook ?? bounties.length,
     active:    bounties.filter(b => Number(b.status) === 0).length,
     completed: bounties.filter(b => Number(b.status) === 2).length,
   };
 
+  const hasData = bounties.length > 0;
+  const showInitialSkeletons = loading && !hasData;
+  const showSyncHint = loading && hasData;
+  const showErrorState = !!error && !hasData;
+
   const hasActiveFilters = filters.category !== 'All' || filters.status !== 'Open' || filters.search || selectedSkills.length > 0;
-  const resetFilters = () => { setFilters({ search: '', category: 'All', status: 'Open', sort: filters.sort }); setSelectedSkills([]); };
+  const resetFilters = () => {
+    setFilters({ search: '', category: 'All', status: 'Open', sort: filters.sort });
+    setSearchInput('');
+    setSelectedSkills([]);
+  };
 
   return (
     <div style={{
@@ -304,17 +377,17 @@ export default function BountiesPage() {
       opacity: mounted ? 1 : 0, transition: 'opacity 0.3s ease',
     }}>
 
-      {/* ── Page header ── */}
+      {/* â”€â”€ Page header â”€â”€ */}
       <div style={{ marginBottom: 32 }}>
         <div style={{
           display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
           flexWrap: 'wrap', gap: 16,
         }}>
           <div>
-            <div className="page-eyebrow">On-chain · {NETWORK_LABEL}</div>
+            <div className="page-eyebrow">On-chain | {NETWORK_LABEL}</div>
             <h1 className="page-title" style={{ marginBottom: 8 }}>Bounties</h1>
-            <p style={{ fontSize: 14, color: theme.colors.text.muted, fontWeight: 300, maxWidth: 400 }}>
-              Pick a task, deliver the work, get paid in MON — on-chain, trustless.
+            <p style={{ color: theme.colors.text.muted, fontSize: 14, lineHeight: 1.7, maxWidth: 560 }}>
+              Pick a task, deliver the work, get paid in MON - on-chain, trustless.
             </p>
           </div>
 
@@ -337,7 +410,7 @@ export default function BountiesPage() {
         </div>
       </div>
 
-      {/* ── Search + Sort bar ── */}
+      {/* â”€â”€ Search + Sort bar â”€â”€ */}
       <div style={{
         display: 'flex', gap: 10, alignItems: 'center',
         marginBottom: 28, flexWrap: 'wrap',
@@ -346,14 +419,14 @@ export default function BountiesPage() {
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
           <span style={{
             position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-            color: theme.colors.text.muted, fontSize: 15, pointerEvents: 'none',
-          }}>⌕</span>
+            color: theme.colors.text.muted, pointerEvents: 'none', display: 'inline-flex',
+          }}><IconSearch size={14} color="currentColor" /></span>
           <input
             ref={searchRef}
             type="text"
-            value={filters.search}
-            onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            placeholder="Search by title, category…"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            placeholder="Search by title, category..."
             style={{
               width: '100%', padding: '10px 36px 10px 38px',
               background: theme.colors.bg.card,
@@ -373,9 +446,9 @@ export default function BountiesPage() {
               e.target.style.boxShadow = 'none';
             }}
           />
-          {filters.search && (
+          {searchInput && (
             <button
-              onClick={() => setFilters(f => ({ ...f, search: '' }))}
+              onClick={() => setSearchInput('')}
               style={{
                 position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
                 background: 'none', border: 'none', cursor: 'pointer',
@@ -400,10 +473,10 @@ export default function BountiesPage() {
         <ViewToggle view={view} onChange={setView} />
       </div>
 
-      {/* ── Body: sidebar + content ── */}
+      {/* â”€â”€ Body: sidebar + content â”€â”€ */}
       <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start' }}>
 
-        {/* Sidebar — hidden on mobile via CSS class */}
+        {/* Sidebar â€” hidden on mobile via CSS class */}
         <div className="bounties-sidebar">
           <SidebarFilters
             filters={filters}
@@ -427,12 +500,17 @@ export default function BountiesPage() {
               fontFamily: theme.fonts.mono, fontSize: 11,
               color: theme.colors.text.faint, letterSpacing: '0.05em',
             }}>
-              {loading ? 'Loading…' : `${bounties.length} result${bounties.length !== 1 ? 's' : ''}`}
-              {!loading && (filters.category !== 'All' || filters.status !== 'Open') && (
+              {showInitialSkeletons ? 'Preparing results...' : `${bounties.length} result${bounties.length === 1 ? '' : 's'}`}
+              {showSyncHint && (
                 <span style={{ color: theme.colors.text.muted }}>
-                  {' · '}
+                  {' | '}Refreshing results
+                </span>
+              )}
+              {!showInitialSkeletons && (filters.category !== 'All' || filters.status !== 'Open') && (
+                <span style={{ color: theme.colors.text.muted }}>
+                  {' | '}
                   {[filters.category !== 'All' && filters.category, filters.status !== 'Open' && filters.status]
-                    .filter(Boolean).join(' · ')}
+                    .filter(Boolean).join(' | ')}
                 </span>
               )}
             </div>
@@ -477,10 +555,13 @@ export default function BountiesPage() {
                   onRemove={() => setFilters(f => ({ ...f, status: 'Open' }))}
                 />
               )}
-              {filters.search && (
+              {searchInput && (
                 <ActiveChip
                   label={`"${filters.search}"`}
-                  onRemove={() => setFilters(f => ({ ...f, search: '' }))}
+                  onRemove={() => {
+                    setSearchInput('');
+                    setFilters(f => ({ ...f, search: '' }));
+                  }}
                 />
               )}
               {selectedSkills.map(s => (
@@ -495,23 +576,72 @@ export default function BountiesPage() {
           )}
 
           {/* Content */}
-          {loading ? (
-            <div style={{ paddingTop: 60 }}>
-              <PageLoader message={showSlowHint ? 'Syncing bounty data from chain/indexer...' : 'Loading...'} />
+          {showInitialSkeletons ? (
+            <div>
+              <div style={{
+                marginBottom: 14,
+                padding: '10px 12px',
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.lg,
+                background: theme.colors.bg.card,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}>
+                <span style={{
+                  fontFamily: theme.fonts.body,
+                  fontSize: 13,
+                  color: theme.colors.text.secondary,
+                }}>
+                  Loading bounty list from on-chain sources.
+                </span>
+                <span style={{
+                  fontFamily: theme.fonts.mono,
+                  fontSize: 11,
+                  color: theme.colors.text.faint,
+                  letterSpacing: '0.05em',
+                }}>
+                  {showSlowHint ? 'Auto-retry active' : 'Initial sync'}
+                </span>
+              </div>
+
               {showSlowHint && (
                 <div style={{
-                  marginTop: -24,
-                  textAlign: 'center',
+                  marginBottom: 14,
                   fontFamily: theme.fonts.mono,
                   fontSize: 11,
                   color: theme.colors.text.muted,
                   letterSpacing: '0.04em',
                 }}>
-                  Network is taking longer than usual. Auto-retry is active.
+                  Chain or indexer response is slower than usual. Results will appear automatically when ready.
+                </div>
+              )}
+
+              {view === 'grid' ? (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px,1fr))',
+                  gap: 12,
+                }}>
+                  {Array.from({ length: 6 }).map((_, index) => (
+                    <BountyCardSkeleton key={`grid-skeleton-${index}`} view="grid" />
+                  ))}
+                </div>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}>
+                  {Array.from({ length: 6 }).map((_, index) => (
+                    <BountyCardSkeleton key={`list-skeleton-${index}`} view="list" />
+                  ))}
                 </div>
               )}
             </div>
-          ) : error ? (
+          ) : showErrorState ? (
             <EmptyState
               icon={<IconWarning size={32} color={theme.colors.amber} />}
               title="Failed to load bounties"
@@ -527,57 +657,128 @@ export default function BountiesPage() {
               action={hasActiveFilters ? resetFilters : () => { window.location.hash = '#/post'; }}
               actionLabel={hasActiveFilters ? 'Clear Filters' : 'Post a Bounty'}
             />
-          ) : view === 'grid' ? (
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px,1fr))',
-              gap: 12,
-            }}>
-              {bounties.map(b => (
-                <BountyCard
-                  key={String(b.id)} bounty={b} view="grid"
-                  onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
-                />
-              ))}
-            </div>
           ) : (
-            <div style={{
-              border: `1px solid ${theme.colors.border.subtle}`,
-              borderRadius: theme.radius.xl, overflow: 'hidden',
-              background: theme.colors.bg.card,
-            }}>
-              {/* List header */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 110px 90px 80px',
-                gap: 8, padding: '8px 20px',
-                borderBottom: `1px solid ${theme.colors.border.subtle}`,
-                background: theme.colors.bg.panel,
-              }}>
-                {['Bounty', 'Reward', 'Deadline', 'Subs'].map(h => (
-                  <span key={h} style={{
-                    fontFamily: theme.fonts.mono, fontSize: 10,
-                    color: theme.colors.text.faint, letterSpacing: '0.08em',
-                    textTransform: 'uppercase',
-                  }}>{h}</span>
-                ))}
-              </div>
+            <>
+              {!!error && hasData && (
+                <div style={{
+                  marginBottom: 12,
+                  padding: '10px 12px',
+                  border: `1px solid ${theme.colors.amberBorder}`,
+                  borderRadius: theme.radius.md,
+                  background: theme.colors.amberDim,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}>
+                  <span style={{
+                    fontFamily: theme.fonts.body,
+                    fontSize: 12,
+                    color: theme.colors.text.muted,
+                  }}>
+                    Showing cached bounty list while network retries in background.
+                  </span>
+                  <button
+                    onClick={() => { void refetch?.(); }}
+                    style={{
+                      padding: '5px 10px',
+                      background: 'transparent',
+                      border: `1px solid ${theme.colors.border.default}`,
+                      borderRadius: theme.radius.full,
+                      color: theme.colors.text.secondary,
+                      fontSize: 11,
+                      fontFamily: theme.fonts.mono,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
-              {bounties.map((b, i) => (
-                <ListRow
-                  key={String(b.id)}
-                  bounty={b}
-                  last={i === bounties.length - 1}
-                  onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
-                />
-              ))}
-            </div>
+              {view === 'grid' ? (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px,1fr))',
+                  gap: 12,
+                }}>
+                  {bounties.map(b => (
+                    <BountyCard
+                      key={String(b.id)} bounty={b} view="grid"
+                      onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div style={{
+                  border: `1px solid ${theme.colors.border.subtle}`,
+                  borderRadius: theme.radius.xl, overflow: 'hidden',
+                  background: theme.colors.bg.card,
+                }}>
+                  {/* List header */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 110px 90px 80px',
+                    gap: 8, padding: '8px 20px',
+                    borderBottom: `1px solid ${theme.colors.border.subtle}`,
+                    background: theme.colors.bg.panel,
+                  }}>
+                    {['Bounty', 'Reward', 'Deadline', 'Subs'].map(h => (
+                      <span key={h} style={{
+                        fontFamily: theme.fonts.mono, fontSize: 10,
+                        color: theme.colors.text.faint, letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                      }}>{h}</span>
+                    ))}
+                  </div>
+
+                  {bounties.map((b, i) => (
+                    <ListRow
+                      key={String(b.id)}
+                      bounty={b}
+                      last={i === bounties.length - 1}
+                      onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {showSyncHint && showSlowHint && (
+                <div style={{
+                  marginTop: 12,
+                  fontFamily: theme.fonts.mono,
+                  fontSize: 11,
+                  color: theme.colors.text.muted,
+                  letterSpacing: '0.04em',
+                }}>
+                  Refresh is slower than usual. Current results stay interactive while retry continues.
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
 
       <style>{`
         .bounties-sidebar { display: flex; }
+        .bounty-skeleton-line {
+          position: relative;
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.06);
+          border-radius: 8px;
+        }
+        .bounty-skeleton-line::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          transform: translateX(-100%);
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+          animation: bounty-skeleton-shimmer 1.4s ease-in-out infinite;
+        }
+        @keyframes bounty-skeleton-shimmer {
+          100% { transform: translateX(100%); }
+        }
         @media (max-width: 768px) {
           .bounties-sidebar { display: none; }
         }
@@ -586,7 +787,7 @@ export default function BountiesPage() {
   );
 }
 
-// ── Active filter chip ────────────────────────────────────────────────────────
+// â”€â”€ Active filter chip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ActiveChip({ label, onRemove, color }) {
   const c = color || theme.colors.text.muted;
   return (
@@ -614,7 +815,7 @@ function ActiveChip({ label, onRemove, color }) {
   );
 }
 
-// ── Dedicated list row (richer than BountyCard list) ─────────────────────────
+// â”€â”€ Dedicated list row (richer than BountyCard list) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ListRow({ bounty, last, onClick }) {
   const [hov, setHov] = useState(false);
 
@@ -715,7 +916,7 @@ function ListRow({ bounty, last, onClick }) {
         fontFamily: theme.fonts.mono, fontSize: 11,
         color: timeLeft === 'Ended' ? theme.colors.text.faint : theme.colors.text.muted,
       }}>
-        {timeLeft || '—'}
+        {timeLeft || '-'}
       </div>
 
       {/* Submissions */}
@@ -729,4 +930,12 @@ function ListRow({ bounty, last, onClick }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
 

@@ -10,11 +10,14 @@ const RESOLVE_TTL_MS = 300_000;
 const CREATOR_IDS_CACHE_TTL_MS = 60_000;
 const CREATOR_IDS_MAX_SCAN = 1200;
 const CREATOR_IDS_CHUNK = 100;
+const BOUNTY_SNAPSHOT_TTL_MS = 45_000;
 
 let resolvedRegistryAddress = '';
 let resolvedUntil = 0;
 let resolveInFlight = null;
 const creatorIdsCache = new Map();
+const bountySnapshotCache = new Map();
+const bountySnapshotInflight = new Map();
 
 function isAddress(value) {
   try {
@@ -39,6 +42,10 @@ function toNormalizedId(value) {
     return '';
   }
 }
+function getBountySnapshotCacheKey(registryAddress, bountyId) {
+  return `${normalizeAddress(registryAddress)}:${toNormalizedId(bountyId)}`;
+}
+
 
 function getCacheKey(registryAddress, creator) {
   return `${normalizeAddress(registryAddress)}:${normalizeAddress(creator)}`;
@@ -58,6 +65,25 @@ function readCreatorIdsCache(registryAddress, creator) {
 function writeCreatorIdsCache(registryAddress, creator, ids) {
   const key = getCacheKey(registryAddress, creator);
   creatorIdsCache.set(key, { ts: Date.now(), ids: Array.isArray(ids) ? ids : [] });
+}
+
+function readBountySnapshotCache(registryAddress, bountyId, ttlMs = BOUNTY_SNAPSHOT_TTL_MS) {
+  const key = getBountySnapshotCacheKey(registryAddress, bountyId);
+  if (!key) return null;
+
+  const row = bountySnapshotCache.get(key);
+  if (!row) return null;
+  if (Date.now() - row.ts > ttlMs) {
+    bountySnapshotCache.delete(key);
+    return null;
+  }
+  return row.value ?? null;
+}
+
+function writeBountySnapshotCache(registryAddress, bountyId, value) {
+  const key = getBountySnapshotCacheKey(registryAddress, bountyId);
+  if (!key || value == null) return;
+  bountySnapshotCache.set(key, { ts: Date.now(), value });
 }
 
 function uniqueIds(ids) {
@@ -215,8 +241,59 @@ export async function listCreatorBountyIds(registryContract, creator) {
   return ids;
 }
 
+export async function getCachedBountySnapshot(registryContract, bountyId, options = {}) {
+  if (!registryContract || bountyId == null) return null;
+
+  const ttlMs = Number(options?.ttlMs) > 0 ? Number(options.ttlMs) : BOUNTY_SNAPSHOT_TTL_MS;
+  const registryAddress = registryContract?.target || resolvedRegistryAddress || ADDRESSES.registry || '';
+  const cached = readBountySnapshotCache(registryAddress, bountyId, ttlMs);
+  if (cached) return cached;
+
+  const key = getBountySnapshotCacheKey(registryAddress, bountyId);
+  if (!key) return null;
+
+  const inFlight = bountySnapshotInflight.get(key);
+  if (inFlight) {
+    try {
+      return await inFlight;
+    } catch {
+      return readBountySnapshotCache(registryAddress, bountyId, Number.MAX_SAFE_INTEGER);
+    }
+  }
+
+  const pending = (async () => {
+    const value = await registryContract.getBounty(bountyId);
+    writeBountySnapshotCache(registryAddress, bountyId, value);
+    return value;
+  })();
+
+  bountySnapshotInflight.set(key, pending);
+  try {
+    return await pending;
+  } catch {
+    return readBountySnapshotCache(registryAddress, bountyId, Number.MAX_SAFE_INTEGER);
+  } finally {
+    bountySnapshotInflight.delete(key);
+  }
+}
+
+export async function getCachedBountySnapshots(registryContract, bountyIds, options = {}) {
+  if (!registryContract) return {};
+
+  const ids = uniqueIds(Array.isArray(bountyIds) ? bountyIds : []);
+  if (ids.length === 0) return {};
+
+  const rows = await Promise.all(ids.map((id) => getCachedBountySnapshot(registryContract, id, options)));
+  return Object.fromEntries(ids.map((id, index) => [String(id), rows[index] ?? null]));
+}
+
 export function clearRegistryResolutionCache() {
   resolvedRegistryAddress = '';
   resolvedUntil = 0;
   creatorIdsCache.clear();
+  bountySnapshotCache.clear();
+  bountySnapshotInflight.clear();
 }
+
+
+

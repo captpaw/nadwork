@@ -107,7 +107,7 @@ export default function Button({
         cursor: isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.45 : 1,
         boxShadow: hov && !isDisabled ? 'none' : v.shadow,
-        transform: pressed ? 'scale(0.975)' : 'scale(1)',
+        transform: pressed ? 'scale(0.975)' : (hov && !isDisabled ? 'scale(1.02)' : 'scale(1)'),
         transition: theme.transition,
         whiteSpace: 'nowrap',
         userSelect: 'none',

@@ -17,12 +17,26 @@ import { AvatarDisplay } from '../components/common/Avatar';
 import { useBounty } from '../hooks/useBounty';
 import { getFactoryCapabilities } from '../utils/factoryCapabilities';
 import { getContract, getReadContractWithFallback, getReadContractFast } from '../utils/ethers';
+import { clearRegistryResolutionCache } from '../utils/registry';
 import { ADDRESSES, FACTORY_ABI, REGISTRY_ABI } from '../config/contracts';
 import { toast } from '../utils/toast';
+import { invalidateBountiesCache } from '../hooks/useBounties';
 import { requestNotificationRefresh } from '../hooks/useNotifications';
 import { getProfileMeta } from '../hooks/useProfileMeta';
 import { useDisplayName } from '../hooks/useIdentity';
 import { IconWarning, IconChevronLeft, IconExternalLink, IconChevronRight, IconTarget, IconClock } from '../components/icons';
+import ReactMarkdown from 'react-markdown';
+import { GATEWAY } from '../config/pinata';
+
+function SafeLink({ href, children, ...props }) {
+  const isSafe = href && (href.startsWith('https://') || href.startsWith('http://') || href.startsWith('#') || href.startsWith('ipfs://'));
+  if (!isSafe) return <span style={{ textDecoration: 'underline', opacity: 0.5 }}>{children}</span>;
+  const resolved = href.startsWith('ipfs://')
+    ? (GATEWAY || 'https://gateway.pinata.cloud/ipfs/') + href.replace('ipfs://', '')
+    : href;
+  return <a href={resolved} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+}
+const MD_COMPONENTS = { a: SafeLink };
 
 // ── Creator mini-card ─────────────────────────────────────────────────────────
 function CreatorCard({ address }) {
@@ -369,6 +383,8 @@ export default function BountyDetailPage() {
       const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, walletClient);
       const tx = await fn(factory);
       await tx.wait();
+      clearRegistryResolutionCache();
+      invalidateBountiesCache();
       refetch();
       requestNotificationRefresh();
     } catch (err) {
@@ -397,6 +413,8 @@ export default function BountyDetailPage() {
       const factory = await getContract(ADDRESSES.factory, FACTORY_ABI, walletClient);
       const tx = await factory.approveWinners(BigInt(id), [BigInt(submissionId)], [1]);
       await tx.wait();
+      clearRegistryResolutionCache();
+      invalidateBountiesCache();
       toast('Winner approved! Payment released.', 'success');
       refetch();
       requestNotificationRefresh();
@@ -559,6 +577,23 @@ export default function BountyDetailPage() {
       )}
 
       <style>{`@media (max-width: 768px) { .bounty-detail-grid { grid-template-columns: 1fr !important; } }`}</style>
+      <style>{`
+        .bounty-detail-description .markdown-body { max-width: 100%; word-wrap: break-word; }
+        .bounty-detail-description .markdown-body > *:first-child { margin-top: 0; }
+        .bounty-detail-description .markdown-body > *:last-child { margin-bottom: 0; }
+        .bounty-detail-description .markdown-body p { margin: 0 0 0.85em; line-height: 1.75; }
+        .bounty-detail-description .markdown-body p:last-child { margin-bottom: 0; }
+        .bounty-detail-description .markdown-body h2 { font-size: 1.05em; font-weight: 700; color: ${theme.colors.text.primary}; margin: 1.25em 0 0.5em; line-height: 1.4; }
+        .bounty-detail-description .markdown-body h2:first-child { margin-top: 0; }
+        .bounty-detail-description .markdown-body h3 { font-size: 1em; font-weight: 600; color: ${theme.colors.text.primary}; margin: 1em 0 0.4em; line-height: 1.4; }
+        .bounty-detail-description .markdown-body ul, .bounty-detail-description .markdown-body ol { margin: 0.5em 0 0.85em; padding-left: 1.6em; line-height: 1.7; }
+        .bounty-detail-description .markdown-body li { margin: 0.35em 0; padding-left: 0.25em; }
+        .bounty-detail-description .markdown-body strong { font-weight: 600; color: ${theme.colors.text.primary}; }
+        .bounty-detail-description .markdown-body a { color: ${theme.colors.primary}; text-decoration: none; }
+        .bounty-detail-description .markdown-body a:hover { text-decoration: underline; }
+        .bounty-detail-markdown-inline ul, .bounty-detail-markdown-inline ol { margin: 0.4em 0; padding-left: 1.4em; }
+        .bounty-detail-markdown-inline li { margin: 0.25em 0; padding-left: 0.2em; }
+      `}</style>
       <div className="bounty-detail-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 24, alignItems: 'start' }}>
         {/* ── LEFT ─────────────────────────────────────────────────────────── */}
         <div>
@@ -634,40 +669,44 @@ export default function BountyDetailPage() {
             </div>
           )}
 
-          {/* Description */}
+          {/* Description — supports Markdown from Post Bounty overview */}
           {(meta?.fullDescription || meta?.description) && (
-            <div style={{ marginBottom: 32 }}>
+            <div className="bounty-detail-description" style={{ marginBottom: 32 }}>
               <h2 style={{ fontFamily: theme.fonts.body, fontWeight: 700, fontSize: 15, letterSpacing: '-0.02em', color: theme.colors.text.primary, marginBottom: 12 }}>Description</h2>
-              <div style={{ fontFamily: theme.fonts.body, fontSize: 14, color: theme.colors.text.secondary, lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
-                {meta.fullDescription || meta.description}
+              <div style={{ fontFamily: theme.fonts.body, fontSize: 14, color: theme.colors.text.secondary, lineHeight: 1.75 }} className="markdown-body">
+                <ReactMarkdown components={MD_COMPONENTS}>{meta.fullDescription || meta.description}</ReactMarkdown>
               </div>
             </div>
           )}
 
-          {/* Requirements */}
+          {/* Requirements — each item may contain Markdown */}
           {meta?.requirements?.length > 0 && (
             <div style={{ marginBottom: 28 }}>
               <h2 style={{ fontFamily: theme.fonts.mono, fontSize: 10, fontWeight: 600, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12 }}>Requirements</h2>
               <div style={{ border: `1px solid ${theme.colors.border.subtle}`, borderRadius: theme.radius.md, overflow: 'hidden' }}>
                 {meta.requirements.map((r, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 14px', background: i % 2 === 0 ? 'transparent' : `${theme.colors.bg.elevated}60`, borderBottom: i < meta.requirements.length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none', alignItems: 'flex-start' }}>
-                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.primary, flexShrink: 0, marginTop: 3, minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
-                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13.5, color: theme.colors.text.secondary, lineHeight: 1.6 }}>{r}</span>
+                  <div key={i} style={{ display: 'flex', gap: 12, padding: '12px 16px', background: i % 2 === 0 ? 'transparent' : `${theme.colors.bg.elevated}60`, borderBottom: i < meta.requirements.length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none', alignItems: 'flex-start' }}>
+                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.primary, flexShrink: 0, marginTop: 2, minWidth: 20, textAlign: 'right' }}>{i + 1}.</span>
+                    <div className="bounty-detail-markdown-inline" style={{ flex: 1, fontFamily: theme.fonts.body, fontSize: 13.5, color: theme.colors.text.secondary, lineHeight: 1.65, minWidth: 0 }}>
+                      <ReactMarkdown components={MD_COMPONENTS}>{String(r)}</ReactMarkdown>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Deliverables */}
+          {/* Deliverables / Evaluation criteria — may contain Markdown */}
           {meta?.evaluationCriteria?.length > 0 && (
             <div style={{ marginBottom: 28 }}>
               <h2 style={{ fontFamily: theme.fonts.mono, fontSize: 10, fontWeight: 600, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12 }}>Deliverables</h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {meta.evaluationCriteria.map((d, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0' }}>
-                    <IconChevronRight size={12} color={theme.colors.cyan} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13.5, color: theme.colors.text.secondary, lineHeight: 1.6 }}>{d}</span>
+                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 0' }}>
+                    <IconChevronRight size={12} color={theme.colors.cyan} style={{ flexShrink: 0, marginTop: 4 }} />
+                    <div className="bounty-detail-markdown-inline" style={{ flex: 1, fontFamily: theme.fonts.body, fontSize: 13.5, color: theme.colors.text.secondary, lineHeight: 1.65, minWidth: 0 }}>
+                      <ReactMarkdown components={MD_COMPONENTS}>{String(d)}</ReactMarkdown>
+                    </div>
                   </div>
                 ))}
               </div>

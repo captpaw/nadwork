@@ -1,18 +1,54 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useAccount, useWalletClient } from 'wagmi';
 import { ethers } from 'ethers';
 import { theme } from '../styles/theme';
 import Button from '../components/common/Button';
 import { uploadJSON, buildBountyMeta } from '../config/pinata';
 import { getContract } from '../utils/ethers';
-import { getResolvedRegistryContract, listCreatorBountyIds } from '../utils/registry.js';
+import { clearRegistryResolutionCache, getResolvedRegistryContract, listCreatorBountyIds } from '../utils/registry.js';
 import { getFactoryCapabilities, seedFactoryCapabilities } from '../utils/factoryCapabilities.js';
 import { ADDRESSES, FACTORY_ABI } from '../config/contracts';
 import { toast } from '../utils/toast';
+import { invalidateBountiesCache } from '../hooks/useBounties';
 import { requestNotificationRefresh } from '../hooks/useNotifications';
 import { IconCheck, IconX, IconCode, IconTarget, IconNote, IconChart, IconBounties, IconChevronLeft, IconChevronRight } from '../components/icons';
+import ReactMarkdown from 'react-markdown';
+import { marked } from 'marked';
+import TurndownService from 'turndown';
+import { GATEWAY } from '../config/pinata';
 
-// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const turndownService = new TurndownService({ headingStyle: 'atx', emDelimiter: '*', strongDelimiter: '**' });
+function mdToHtml(md) {
+  if (md == null || String(md).trim() === '') return '';
+  try {
+    return marked.parse(String(md), { async: false }) || '';
+  } catch {
+    return String(md);
+  }
+}
+function htmlToMd(html) {
+  if (html == null) return '';
+  const s = String(html).trim();
+  if (!s || s === '<br>' || s === '<p></p>' || s === '<p><br></p>' || s === '<div><br></div>') return '';
+  try {
+    const md = turndownService.turndown(s);
+    return (md && md.trim()) ? md : '';
+  } catch {
+    return '';
+  }
+}
+
+function SafeLinkMarkdown({ href, children, ...props }) {
+  const isSafe = href && (href.startsWith('https://') || href.startsWith('http://') || href.startsWith('#') || href.startsWith('ipfs://'));
+  if (!isSafe) return <span style={{ textDecoration: 'underline', opacity: 0.5 }}>{children}</span>;
+  const resolved = href.startsWith('ipfs://')
+    ? (GATEWAY || 'https://gateway.pinata.cloud/ipfs/') + href.replace('ipfs://', '')
+    : href;
+  return <a href={resolved} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+}
+const MD_COMPONENTS = { a: SafeLinkMarkdown };
+
+// ?????????????? Constants ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 const CATEGORIES = [
   { key: 'Dev',      Icon: IconCode,  desc: 'Smart contracts, dApps, tooling' },
   { key: 'Design',   Icon: IconTarget, desc: 'UI/UX, branding, graphics'       },
@@ -50,6 +86,28 @@ const PRESET_SKILLS = [
   'Technical Writing', 'Documentation', 'Translation', 'Copywriting',
   'Market Research', 'Tokenomics', 'Security Audit', 'Data Analysis',
 ];
+
+function normalizeSkill(raw) {
+  return String(raw || '')
+    .replace(/^[-*•·\s,]+/, '')
+    .replace(/[\s,;]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeSkillList(list = []) {
+  const seen = new Set();
+  const next = [];
+  for (const raw of list) {
+    const skill = normalizeSkill(raw);
+    if (!skill) continue;
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(skill);
+  }
+  return next;
+}
 function extractBountyIdFromReceipt(receipt) {
   try {
     const iface = new ethers.Interface(FACTORY_ABI);
@@ -123,6 +181,7 @@ const INITIAL_FORM = {
   category: 'Dev',
   requirements: [''],     // list: what builder must do
   deliverables: [''],     // list: what builder must submit
+  evaluationCriteria: [''], // list: how creator evaluates submissions
   skills: [],           // array of strings
   reward: '',
   winnerCount: '1',
@@ -131,10 +190,14 @@ const INITIAL_FORM = {
   requiresApplication: false, // V4: curated project flag
 };
 
-// â”€â”€ Sub-components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?????????????? Sub-components ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 function StepIndicator({ current }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 36 }}>
+    <div style={{ marginBottom: 36 }}>
+      <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted, marginBottom: 16 }}>
+        Step {current + 1} of {STEPS.length}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
       {STEPS.map((s, i) => {
         const done   = i < current;
         const active = i === current;
@@ -174,6 +237,7 @@ function StepIndicator({ current }) {
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -195,6 +259,94 @@ function FieldLabel({ children, hint, required }) {
           color: theme.colors.text.faint, marginTop: 2,
         }}>{hint}</div>
       )}
+    </div>
+  );
+}
+
+function SectionCard({ eyebrow, title, hint, children, tone = 'default' }) {
+  const isPrimary = tone === 'primary';
+  return (
+    <div style={{
+      padding: 18,
+      background: isPrimary ? 'linear-gradient(180deg, rgba(110,84,255,0.08) 0%, rgba(10,10,12,0.96) 100%)' : theme.colors.bg.card,
+      border: `1px solid ${isPrimary ? theme.colors.primaryBorder : theme.colors.border.subtle}`,
+      borderRadius: theme.radius.xl,
+      boxShadow: isPrimary ? `0 20px 60px ${theme.colors.primaryGlow}` : 'none',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 16,
+    }}>
+      {(eyebrow || title || hint) && (
+        <div>
+          {eyebrow && (
+            <div style={{
+              fontFamily: theme.fonts.mono,
+              fontSize: 10,
+              color: isPrimary ? theme.colors.primary : theme.colors.text.faint,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              marginBottom: 6,
+            }}>
+              {eyebrow}
+            </div>
+          )}
+          {title && (
+            <div style={{
+              fontFamily: theme.fonts.body,
+              fontSize: 17,
+              fontWeight: 700,
+              color: theme.colors.text.primary,
+              letterSpacing: '-0.03em',
+              marginBottom: hint ? 4 : 0,
+            }}>
+              {title}
+            </div>
+          )}
+          {hint && (
+            <div style={{
+              fontFamily: theme.fonts.body,
+              fontSize: 12.5,
+              color: theme.colors.text.muted,
+              lineHeight: 1.65,
+            }}>
+              {hint}
+            </div>
+          )}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function MetaPill({ label, value, accent = false }) {
+  return (
+    <div style={{
+      padding: '10px 12px',
+      background: accent ? theme.colors.primaryDim : theme.colors.bg.panel,
+      border: `1px solid ${accent ? theme.colors.primaryBorder : theme.colors.border.subtle}`,
+      borderRadius: theme.radius.lg,
+      minWidth: 110,
+    }}>
+      <div style={{
+        fontFamily: theme.fonts.mono,
+        fontSize: 10,
+        color: theme.colors.text.faint,
+        textTransform: 'uppercase',
+        letterSpacing: '0.08em',
+        marginBottom: 6,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontFamily: theme.fonts.body,
+        fontSize: 13,
+        fontWeight: accent ? 700 : 600,
+        color: accent ? theme.colors.primaryLight : theme.colors.text.primary,
+        lineHeight: 1.4,
+      }}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -226,37 +378,35 @@ function FormInput({ label, hint, required, error, ...props }) {
   );
 }
 
-function FormTextarea({ label, hint, required, error, minHeight = 120, ...props }) {
+function FormTextarea({ label, hint, required, error, minHeight = 120, maxHeight = 420, ...props }) {
   const [focused, setFocused] = useState(false);
-  const ref = useRef(null);
-
-  // Auto-resize
-  const handleInput = (e) => {
-    const el = e.target;
-    el.style.height = 'auto';
-    el.style.height = Math.max(minHeight, el.scrollHeight) + 'px';
-    if (props.onChange) props.onChange(e);
-  };
 
   return (
     <div>
       {label && <FieldLabel hint={hint} required={required}>{label}</FieldLabel>}
       <textarea
-        ref={ref}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        onChange={handleInput}
         style={{
-          width: '100%', padding: '10px 14px',
+          width: '100%',
+          padding: '10px 14px',
           background: theme.colors.bg.input,
           color: theme.colors.text.primary,
           border: `1px solid ${error ? theme.colors.red[500] : focused ? theme.colors.primary : theme.colors.border.default}`,
-          borderRadius: theme.radius.md, fontSize: 14,
-          fontFamily: theme.fonts.body, outline: 'none',
-          lineHeight: 1.7, resize: 'none',
+          borderRadius: theme.radius.md,
+          fontSize: 14,
+          fontFamily: theme.fonts.body,
+          outline: 'none',
+          lineHeight: 1.7,
+          resize: 'vertical',
           boxShadow: focused ? (error ? `0 0 0 3px ${theme.colors.red.dim}` : `0 0 0 3px ${theme.colors.primaryDim}`) : 'none',
           transition: 'border-color 0.15s, box-shadow 0.15s',
-          minHeight, overflow: 'hidden', boxSizing: 'border-box',
+          minHeight,
+          maxHeight,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          boxSizing: 'border-box',
+          WebkitOverflowScrolling: 'touch',
         }}
         {...props}
       />
@@ -267,58 +417,257 @@ function FormTextarea({ label, hint, required, error, minHeight = 120, ...props 
   );
 }
 
-// Dynamic list editor (requirements / deliverables)
-function ListEditor({ label, hint, required, items, onChange, placeholder, maxItems = 8 }) {
-  const addItem    = () => { if (items.length < maxItems) onChange([...items, '']); };
-  const removeItem = (i) => onChange(items.filter((_, idx) => idx !== i));
-  const editItem   = (i, v) => onChange(items.map((x, idx) => idx === i ? v : x));
+// ── WYSIWYG toolbar: execCommand on contentEditable, then sync to Markdown ─────
+function WysiwygToolbar({ editorRef, onSync, compact = false }) {
+  const exec = (cmd, value = null) => {
+    if (editorRef?.current) {
+      editorRef.current.focus();
+      document.execCommand(cmd, false, value);
+      onSync();
+    }
+  };
+  const clearFormat = () => {
+    if (editorRef?.current) {
+      editorRef.current.focus();
+      document.execCommand('removeFormat', false, null);
+      document.execCommand('formatBlock', false, 'p');
+      onSync();
+    }
+  };
+  const btn = (label, title, onClick) => (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => { e.preventDefault(); onClick(); }}
+      style={{
+        padding: compact ? '4px 8px' : '6px 10px',
+        minWidth: compact ? 28 : 32,
+        background: theme.colors.bg.elevated,
+        border: `1px solid ${theme.colors.border.subtle}`,
+        borderRadius: theme.radius.sm,
+        color: theme.colors.text.secondary,
+        fontFamily: theme.fonts.body,
+        fontSize: compact ? 11 : 12,
+        fontWeight: 600,
+        cursor: 'pointer',
+        transition: theme.transition,
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.borderColor = theme.colors.primary;
+        e.currentTarget.style.color = theme.colors.primary;
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = theme.colors.border.subtle;
+        e.currentTarget.style.color = theme.colors.text.secondary;
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+      {btn('B', 'Bold', () => exec('bold'))}
+      {btn('I', 'Italic', () => exec('italic'))}
+      {btn('•', 'Bullet list', () => exec('insertUnorderedList'))}
+      {btn('1.', 'Numbered list', () => exec('insertOrderedList'))}
+      {btn('H2', 'Heading 2', () => exec('formatBlock', 'h2'))}
+      {btn('H3', 'Heading 3', () => exec('formatBlock', 'h3'))}
+      {btn('Normal', 'Clear formatting / back to normal text', clearFormat)}
+    </div>
+  );
+}
+
+// Overview: WYSIWYG contentEditable, simpan sebagai Markdown, tanpa kolom Preview
+function FormTextareaWithToolbar({ label, hint, required, error, minHeight = 120, maxHeight = 420, value, onChange, placeholder, ...rest }) {
+  const [focused, setFocused] = useState(false);
+  const editorRef = useRef(null);
+  const lastValueRef = useRef(undefined);
+  const changeFromEditorRef = useRef(false);
+
+  const syncHtmlToMarkdown = useCallback(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    const md = htmlToMd(el.innerHTML);
+    changeFromEditorRef.current = true;
+    onChange({ target: { value: md } });
+  }, [onChange]);
+
+  const handlePaste = useCallback((e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData)?.getData('text/plain') ?? '';
+    document.execCommand('insertText', false, text);
+    syncHtmlToMarkdown();
+  }, [syncHtmlToMarkdown]);
+
+  useEffect(() => {
+    const v = value == null ? '' : String(value);
+    if (changeFromEditorRef.current) {
+      lastValueRef.current = v;
+      changeFromEditorRef.current = false;
+      return;
+    }
+    if (lastValueRef.current === v) return;
+    const el = editorRef.current;
+    if (el) {
+      el.innerHTML = mdToHtml(v) || '';
+      lastValueRef.current = v;
+    } else {
+      lastValueRef.current = v;
+    }
+  }, [value]);
+
+  const baseStyle = {
+    width: '100%',
+    padding: '10px 14px',
+    background: theme.colors.bg.input,
+    color: theme.colors.text.primary,
+    border: `1px solid ${error ? theme.colors.red[500] : focused ? theme.colors.primary : theme.colors.border.default}`,
+    borderRadius: theme.radius.md,
+    fontSize: 14,
+    fontFamily: theme.fonts.body,
+    outline: 'none',
+    lineHeight: 1.7,
+    minHeight,
+    maxHeight,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    boxSizing: 'border-box',
+    WebkitOverflowScrolling: 'touch',
+    boxShadow: focused ? (error ? `0 0 0 3px ${theme.colors.red.dim}` : `0 0 0 3px ${theme.colors.primaryDim}`) : 'none',
+    transition: 'border-color 0.15s, box-shadow 0.15s',
+  };
 
   return (
     <div>
-      <FieldLabel hint={hint} required={required}>{label}</FieldLabel>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {items.map((item, i) => (
-          <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <span style={{
-              fontFamily: theme.fonts.mono, fontSize: 10,
-              color: theme.colors.text.faint, width: 18, flexShrink: 0, textAlign: 'right',
-            }}>{i + 1}.</span>
-            <ItemInput
+      {label && <FieldLabel hint={hint} required={required}>{label}</FieldLabel>}
+      <WysiwygToolbar editorRef={editorRef} onSync={syncHtmlToMarkdown} />
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder={placeholder}
+        onInput={syncHtmlToMarkdown}
+        onPaste={handlePaste}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{
+          ...baseStyle,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      />
+      <style>{`
+        [data-placeholder]:empty::before { content: attr(data-placeholder); color: ${theme.colors.text.faint}; }
+        [contenteditable="true"] h2 { font-size: 1.25em; font-weight: 700; margin: 0.6em 0 0.3em; }
+        [contenteditable="true"] h3 { font-size: 1.1em; font-weight: 600; margin: 0.5em 0 0.25em; }
+        [contenteditable="true"] ul, [contenteditable="true"] ol { margin: 0.5em 0; padding-left: 1.75em; }
+        [contenteditable="true"] li { margin: 0.25em 0; padding-left: 0.35em; }
+      `}</style>
+      {error && (
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
+// Dynamic list editor (requirements / deliverables)
+function ListEditor({ label, hint, required, items, onChange, placeholder, maxItems = 8 }) {
+  const normalizedItems = items.map((item) => String(item || ''));
+  const filledCount = normalizedItems.filter((item) => item.trim()).length;
+
+  const addItem = () => {
+    if (normalizedItems.length < maxItems) onChange([...normalizedItems, '']);
+  };
+  const removeItem = (i) => onChange(normalizedItems.filter((_, idx) => idx !== i));
+  const editItem = (i, v) => onChange(normalizedItems.map((x, idx) => idx === i ? v : x));
+
+  const labelWithCounter = label ? `${label} (${filledCount}/${maxItems})` : null;
+  return (
+    <div>
+      {label ? <FieldLabel hint={hint} required={required}>{labelWithCounter}</FieldLabel> : hint ? <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.faint, marginBottom: 8 }}>{hint}</div> : null}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {normalizedItems.map((item, i) => (
+          <div
+            key={i}
+            style={{
+              padding: 12,
+              background: theme.colors.bg.panel,
+              border: `1px solid ${theme.colors.border.subtle}`,
+              borderRadius: theme.radius.lg,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 10,
+            }}>
+              <div style={{
+                fontFamily: theme.fonts.mono,
+                fontSize: 10,
+                color: theme.colors.text.faint,
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+              }}>
+                Item {i + 1}
+              </div>
+              {normalizedItems.length > 1 && (
+                <button
+                  onClick={() => removeItem(i)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 10px',
+                    background: 'transparent',
+                    border: `1px solid ${theme.colors.border.subtle}`,
+                    borderRadius: theme.radius.md,
+                    cursor: 'pointer',
+                    color: theme.colors.text.faint,
+                    fontFamily: theme.fonts.body,
+                    fontSize: 11.5,
+                    transition: theme.transition,
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = theme.colors.red[500];
+                    e.currentTarget.style.color = theme.colors.red[400];
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = theme.colors.border.subtle;
+                    e.currentTarget.style.color = theme.colors.text.faint;
+                  }}
+                  title="Remove item"
+                >
+                  <IconX size={12} color="currentColor" /> Remove
+                </button>
+              )}
+            </div>
+            <ItemTextareaWithToolbar
               value={item}
               placeholder={placeholder}
               onChange={(v) => editItem(i, v)}
             />
-            {items.length > 1 && (
-              <button
-                onClick={() => removeItem(i)}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: theme.colors.text.faint, fontSize: 14, padding: '0 2px',
-                  flexShrink: 0, lineHeight: 1,
-                  transition: theme.transition,
-                }}
-                onMouseEnter={e => e.currentTarget.style.color = theme.colors.red[400]}
-                onMouseLeave={e => e.currentTarget.style.color = theme.colors.text.faint}
-                title="Remove"
-              ><IconX size={14} color="currentColor" /></button>
-            )}
           </div>
         ))}
-        {items.length < maxItems && (
+        {normalizedItems.length < maxItems && (
           <button
             onClick={addItem}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               background: 'none', border: `1px dashed ${theme.colors.border.default}`,
-              borderRadius: theme.radius.md, padding: '7px 12px',
-              color: theme.colors.text.faint, fontSize: 12,
+              borderRadius: theme.radius.lg, padding: '12px 14px',
+              color: theme.colors.text.faint, fontSize: 12.5,
               fontFamily: theme.fonts.body, cursor: 'pointer',
               transition: theme.transition, marginTop: 2,
             }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = theme.colors.primary; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.color = theme.colors.text.faint; }}
           >
-            <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Add item
+            <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Add another item
           </button>
         )}
       </div>
@@ -326,22 +675,26 @@ function ListEditor({ label, hint, required, items, onChange, placeholder, maxIt
   );
 }
 
-function ItemInput({ value, placeholder, onChange }) {
+function ItemTextarea({ value, placeholder, onChange }) {
   const [focused, setFocused] = useState(false);
   return (
-    <input
+    <textarea
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       style={{
-        flex: 1, padding: '8px 12px',
+        width: '100%',
+        minHeight: 88,
+        padding: '10px 12px',
         background: theme.colors.bg.input,
         color: theme.colors.text.primary,
         border: `1px solid ${focused ? theme.colors.primary : theme.colors.border.default}`,
         borderRadius: theme.radius.md, fontSize: 13.5,
         fontFamily: theme.fonts.body, outline: 'none',
+        resize: 'vertical',
+        lineHeight: 1.65,
         boxShadow: focused ? `0 0 0 3px ${theme.colors.primaryDim}` : 'none',
         transition: theme.transition, boxSizing: 'border-box',
       }}
@@ -349,29 +702,122 @@ function ItemInput({ value, placeholder, onChange }) {
   );
 }
 
+// List item: WYSIWYG contentEditable (requirements / deliverables / evaluation criteria), tanpa Preview
+function ItemTextareaWithToolbar({ value, placeholder, onChange }) {
+  const [focused, setFocused] = useState(false);
+  const editorRef = useRef(null);
+  const lastValueRef = useRef(undefined);
+  const changeFromEditorRef = useRef(false);
+
+  const syncHtmlToMarkdown = useCallback(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    const md = htmlToMd(el.innerHTML);
+    changeFromEditorRef.current = true;
+    onChange(md);
+  }, [onChange]);
+
+  const handlePaste = useCallback((e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData)?.getData('text/plain') ?? '';
+    document.execCommand('insertText', false, text);
+    syncHtmlToMarkdown();
+  }, [syncHtmlToMarkdown]);
+
+  useEffect(() => {
+    const v = value == null ? '' : String(value);
+    if (changeFromEditorRef.current) {
+      lastValueRef.current = v;
+      changeFromEditorRef.current = false;
+      return;
+    }
+    if (lastValueRef.current === v) return;
+    const el = editorRef.current;
+    if (el) {
+      el.innerHTML = mdToHtml(v) || '';
+      lastValueRef.current = v;
+    } else {
+      lastValueRef.current = v;
+    }
+  }, [value]);
+
+  return (
+    <div>
+      <WysiwygToolbar editorRef={editorRef} onSync={syncHtmlToMarkdown} compact />
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder={placeholder}
+        onInput={syncHtmlToMarkdown}
+        onPaste={handlePaste}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{
+          width: '100%',
+          minHeight: 88,
+          padding: '10px 12px',
+          background: theme.colors.bg.input,
+          color: theme.colors.text.primary,
+          border: `1px solid ${focused ? theme.colors.primary : theme.colors.border.default}`,
+          borderRadius: theme.radius.md,
+          fontSize: 13.5,
+          fontFamily: theme.fonts.body,
+          outline: 'none',
+          lineHeight: 1.65,
+          boxShadow: focused ? `0 0 0 3px ${theme.colors.primaryDim}` : 'none',
+          transition: theme.transition,
+          boxSizing: 'border-box',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      />
+    </div>
+  );
+}
+
 function TagInput({ label, hint, value = [], onChange, max = 10 }) {
   const [inputVal, setInputVal] = useState('');
   const [focused,  setFocused]  = useState(false);
+  const normalizedValue = normalizeSkillList(value);
+  const suggestions = PRESET_SKILLS
+    .filter((preset) => !normalizedValue.some((item) => item.toLowerCase() === preset.toLowerCase()))
+    .slice(0, 12);
 
   const addTag = (raw) => {
-    const tag = raw.trim();
-    if (!tag || value.length >= max) return;
-    if (value.map(t => t.toLowerCase()).includes(tag.toLowerCase())) { setInputVal(''); return; }
-    onChange([...value, tag]);
+    const incoming = normalizeSkillList(String(raw || '').split(/[\n,;]+/));
+    if (incoming.length === 0) { setInputVal(''); return; }
+    const next = normalizeSkillList([...normalizedValue, ...incoming]).slice(0, max);
+    onChange(next);
     setInputVal('');
   };
-  const removeTag = (i) => onChange(value.filter((_, idx) => idx !== i));
+  const removeTag = (i) => onChange(normalizedValue.filter((_, idx) => idx !== i));
   const onKeyDown = (e) => {
     if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(inputVal); }
-    if (e.key === 'Backspace' && !inputVal && value.length > 0) removeTag(value.length - 1);
+    if (e.key === 'Backspace' && !inputVal && normalizedValue.length > 0) removeTag(normalizedValue.length - 1);
   };
 
   return (
     <div>
       {label && <FieldLabel hint={hint}>{label}</FieldLabel>}
       <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 10,
+        flexWrap: 'wrap',
+      }}>
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted }}>
+          {normalizedValue.length} / {max} skills selected
+        </div>
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint }}>
+          Custom skills supported. Separate with Enter, comma, or semicolon.
+        </div>
+      </div>
+      <div style={{
         display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center',
-        padding: '8px 12px', minHeight: 44,
+        padding: '10px 12px', minHeight: 52,
         background: theme.colors.bg.input,
         border: `1px solid ${focused ? theme.colors.primary : theme.colors.border.default}`,
         borderRadius: theme.radius.md,
@@ -380,10 +826,10 @@ function TagInput({ label, hint, value = [], onChange, max = 10 }) {
       }}
         onClick={() => document.getElementById('tag-input-field')?.focus()}
       >
-        {value.map((tag, i) => (
+        {normalizedValue.map((tag, i) => (
           <span key={i} style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
-            padding: '2px 8px 2px 10px',
+            padding: '4px 8px 4px 10px',
             background: theme.colors.primaryDim,
             border: `1px solid ${theme.colors.primaryBorder}`,
             borderRadius: theme.radius.full,
@@ -398,10 +844,10 @@ function TagInput({ label, hint, value = [], onChange, max = 10 }) {
             }}
               onMouseEnter={e => e.currentTarget.style.opacity = '1'}
               onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
-            >Ã—</button>
+            ><IconX size={12} color="currentColor" /></button>
           </span>
         ))}
-        {value.length < max && (
+        {normalizedValue.length < max && (
           <input
             id="tag-input-field"
             value={inputVal}
@@ -409,7 +855,7 @@ function TagInput({ label, hint, value = [], onChange, max = 10 }) {
             onKeyDown={onKeyDown}
             onBlur={() => { addTag(inputVal); setFocused(false); }}
             onFocus={() => setFocused(true)}
-            placeholder={value.length === 0 ? 'Type a skill and press Enter...' : ''}
+            placeholder={normalizedValue.length === 0 ? 'Type a skill and press Enter...' : ''}
             style={{
               flex: 1, minWidth: 120, border: 'none', outline: 'none',
               background: 'transparent', color: theme.colors.text.primary,
@@ -418,11 +864,10 @@ function TagInput({ label, hint, value = [], onChange, max = 10 }) {
           />
         )}
       </div>
-      {/* Preset suggestions */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
-        {PRESET_SKILLS.filter(p => !value.map(v => v.toLowerCase()).includes(p.toLowerCase())).slice(0, 10).map(p => (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+        {suggestions.map(p => (
           <button key={p} onClick={() => addTag(p)} style={{
-            padding: '3px 9px',
+            padding: '5px 10px',
             background: theme.colors.bg.elevated,
             border: `1px solid ${theme.colors.border.subtle}`,
             borderRadius: theme.radius.full,
@@ -435,9 +880,118 @@ function TagInput({ label, hint, value = [], onChange, max = 10 }) {
           >+ {p}</button>
         ))}
       </div>
-      <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, marginTop: 4 }}>
-        Press Enter or comma to add - max {max}
+      <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, marginTop: 6, lineHeight: 1.6 }}>
+        Preset tags are only suggestions. You can paste or type any role, tool, framework, or domain skill needed for this bounty.
       </div>
+    </div>
+  );
+}
+
+function CollapsibleTip({ label, content, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{
+      padding: '12px 14px',
+      background: theme.colors.bg.panel,
+      border: `1px solid ${theme.colors.border.subtle}`,
+      borderRadius: theme.radius.lg,
+    }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+          background: 'none', border: 'none', cursor: 'pointer',
+          fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint,
+          letterSpacing: '0.08em', textTransform: 'uppercase',
+          padding: 0, textAlign: 'left',
+        }}
+      >
+        {label}
+        <span style={{ transform: open ? 'rotate(180deg)' : 'none', transition: theme.transition }}>
+          <IconChevronRight size={14} color={theme.colors.text.faint} style={{ verticalAlign: 'middle' }} />
+        </span>
+      </button>
+      {open && (
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 12.5, color: theme.colors.text.muted, lineHeight: 1.7, marginTop: 10 }}>
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleListEditor({ label, hint, items, onChange, placeholder, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const trimmed = items.map((x) => String(x || '').trim()).filter(Boolean);
+  const count = trimmed.length;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+          marginBottom: open ? 10 : 0, padding: 0, background: 'none', border: 'none', cursor: 'pointer',
+          fontFamily: theme.fonts.body, fontSize: 13, fontWeight: 500, color: theme.colors.text.secondary, textAlign: 'left',
+        }}
+      >
+        <span>{label} {count > 0 && `(${count})`}</span>
+        <span style={{ transform: open ? 'rotate(180deg)' : 'none', transition: theme.transition }}>
+          <IconChevronRight size={14} color={theme.colors.text.muted} />
+        </span>
+      </button>
+      {hint && !open && (
+        <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.faint, marginTop: 2 }}>{hint}</div>
+      )}
+      {open && (
+        <ListEditor
+          label=""
+          hint={hint}
+          required={false}
+          items={items}
+          onChange={onChange}
+          placeholder={placeholder}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReviewAccordionCard({ eyebrow, title, hint, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{
+      padding: 18,
+      background: theme.colors.bg.card,
+      border: `1px solid ${theme.colors.border.subtle}`,
+      borderRadius: theme.radius.xl,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 12,
+    }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+          padding: 0, background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+        }}
+      >
+        <div>
+          {eyebrow && (
+            <div style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{eyebrow}</div>
+          )}
+          <div style={{ fontFamily: theme.fonts.body, fontSize: 15, fontWeight: 600, color: theme.colors.text.primary }}>{title}</div>
+          {hint && (
+            <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted, marginTop: 2 }}>{hint}</div>
+          )}
+        </div>
+        <span style={{ transform: open ? 'rotate(180deg)' : 'none', transition: theme.transition, flexShrink: 0 }}>
+          <IconChevronRight size={18} color={theme.colors.text.muted} />
+        </span>
+      </button>
+      {open && <div style={{ paddingTop: 4 }}>{children}</div>}
     </div>
   );
 }
@@ -465,7 +1019,7 @@ function ReviewRow({ label, value, mono, accent, last }) {
   );
 }
 
-// â”€â”€ Main page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?????????????? Main page ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 export default function PostBountyPage() {
   const { isConnected, address } = useAccount();
   const { data: walletClient }   = useWalletClient();
@@ -560,6 +1114,23 @@ export default function PostBountyPage() {
       return rewardWei + stake;
     } catch { return null; }
   })();
+  const trimmedRequirements = form.requirements.map((item) => String(item || '').trim()).filter(Boolean);
+  const trimmedDeliverables = form.deliverables.map((item) => String(item || '').trim()).filter(Boolean);
+  const trimmedEvaluationCriteria = form.evaluationCriteria.map((item) => String(item || '').trim()).filter(Boolean);
+  const normalizedSkills = normalizeSkillList(form.skills);
+  const overviewLength = form.description.trim().length;
+  const deadlineLabel = form.deadline
+    ? new Date(form.deadline).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : '-';
+  const modeLabel = applicationFlowUnsupported
+    ? 'Open (direct submit)'
+    : (form.requiresApplication ? 'Curated (apply-first)' : 'Open (direct submit)');
+  const totalLockedDisplay = totalLocked
+    ? (Number(totalLocked) / 1e18).toFixed(4)
+    : (form.reward && !isNaN(parseFloat(form.reward)) ? (parseFloat(form.reward) * 1.05).toFixed(4) : '-');
+  const creatorStakeDisplay = creatorStake
+    ? (Number(creatorStake) / 1e18).toFixed(4)
+    : (form.reward && !isNaN(parseFloat(form.reward)) ? (parseFloat(form.reward) * 0.05).toFixed(4) : '-');
 
   // Validation
   const validateStep0 = () => {
@@ -623,12 +1194,13 @@ export default function PostBountyPage() {
         : (form.skills ? form.skills.split(',').map(s => s.trim()).filter(Boolean) : []);
       const requirements = form.requirements.filter(r => r.trim());
       const deliverables = form.deliverables.filter(d => d.trim());
+      const evaluationCriteria = form.evaluationCriteria.filter(c => c.trim());
 
       const meta = buildBountyMeta({
         title:           form.title.trim(),
         fullDescription: form.description.trim(),
         requirements,
-        evaluationCriteria: deliverables,
+        evaluationCriteria,
         skills,
         contactInfo: form.contactInfo.trim(),
         category:    form.category,
@@ -797,6 +1369,8 @@ export default function PostBountyPage() {
         metaCid: ipfsHash,
         requiresApplication: effectiveRequiresApplication,
       });
+      clearRegistryResolutionCache();
+      invalidateBountiesCache();
       requestNotificationRefresh();
       toast('Bounty posted! Funds are now locked on-chain.', 'success');
       setDone(true);
@@ -804,7 +1378,7 @@ export default function PostBountyPage() {
       console.error('[PostBounty]', err);
       const rawMsg = err?.reason || err?.shortMessage || err?.message || 'Unknown error';
       const msg = /no data present|require\\(false\\)|missing revert data|No V4 createBounty path/i.test(String(rawMsg))
-        ? 'Contract reverted tanpa pesan. Cek: (1) Judul max 100 karakter, (2) reward+stake sesuai kontrak, (3) alamat deployment V4 aktif benar.'
+        ? 'Contract reverted with no message. Check: (1) Title max 100 characters, (2) reward and stake match contract limits, (3) V4 deployment address is correct.'
         : rawMsg;
       toast('Failed: ' + msg, 'error');
     } finally {
@@ -862,7 +1436,7 @@ export default function PostBountyPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // â”€â”€ Not connected â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?????????????? Not connected ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
   if (!isConnected) {
     return (
       <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
@@ -880,7 +1454,7 @@ export default function PostBountyPage() {
     );
   }
 
-  // â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?????????????? Done ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
   if (done) {
     return (
       <div style={{ maxWidth: 480, margin: '0 auto', padding: 'clamp(64px,10vh,120px) 24px', textAlign: 'center' }}>
@@ -905,7 +1479,7 @@ export default function PostBountyPage() {
     );
   }
 
-  // â”€â”€ Form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?????????????? Form ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
   return (
     <div
       ref={formRef}
@@ -961,97 +1535,199 @@ export default function PostBountyPage() {
 
       <StepIndicator current={step} />
 
-      {/* â”€â”€ Step 0: Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      <style>{`
+        @keyframes postBountyStepFadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .post-bounty-step-content { animation: postBountyStepFadeIn 0.25s ease-out forwards; }
+      `}</style>
+      <div key={step} className="post-bounty-step-content">
+      {/* ?????????????? Step 0: Task — Single column, Category first, progressive disclosure ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????? */}
       {step === 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-
-          {/* Title */}
-          <FormInput
-            label="Title" required
-            hint="Max 100 characters (smart contract limit)"
-            placeholder="e.g. Build a Monad DEX aggregator UI"
-            maxLength={100}
-            value={form.title}
-            onChange={e => set('title', e.target.value)}
-            error={errors.title}
-          />
-
-          {/* Category */}
-          <div>
-            <FieldLabel>Category</FieldLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
-              {CATEGORIES.map(c => {
-                const active = form.category === c.key;
-                return (
-                  <button
-                    key={c.key}
-                    onClick={() => set('category', c.key)}
-                    style={{
-                      padding: '10px 14px', textAlign: 'left',
-                      background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
-                      color: active ? theme.colors.primary : theme.colors.text.secondary,
-                      border: `1px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
-                      borderRadius: theme.radius.md, cursor: 'pointer',
-                      transition: theme.transition,
-                      boxShadow: active ? `0 0 0 1px ${theme.colors.primary}` : 'none',
-                    }}
-                    onMouseEnter={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.background = theme.colors.bg.hover; } }}
-                    onMouseLeave={e => { if (!active) { e.currentTarget.style.borderColor = theme.colors.border.subtle; e.currentTarget.style.background = theme.colors.bg.elevated; } }}
-                  >
-                    <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'center' }}><c.Icon size={20} color={active ? theme.colors.primary : theme.colors.text.muted} /></div>
-                    <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13 }}>{c.key}</div>
-                    <div style={{ fontFamily: theme.fonts.body, fontSize: 10.5, color: active ? `${theme.colors.primary}99` : theme.colors.text.faint, marginTop: 2 }}>{c.desc}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Description */}
-          <FormTextarea
-            label="Overview" required
-            hint="Describe the project context and what needs to be built or done."
-            placeholder="Provide a clear overview of the task, technical context, and goals. The more specific you are, the better submissions you'll receive."
-            value={form.description}
-            onChange={e => set('description', e.target.value)}
-            error={errors.description}
-            minHeight={130}
-          />
-
-          {/* Requirements */}
-          <div>
-            <ListEditor
-              label="Requirements" required
-              hint="Step-by-step tasks the builder must complete."
-              items={form.requirements}
-              onChange={v => set('requirements', v)}
-              placeholder="e.g. Implement ERC-20 token swap using Uniswap V3"
-            />
-            {errors.requirements && (
-              <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{errors.requirements}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          <SectionCard
+            eyebrow="Step 1 of 3"
+            title="Define the bounty clearly"
+            hint="A sharp brief attracts stronger builders, reduces review friction, and makes your outcome easier to judge."
+            tone="primary"
+          >
+            {/* MetaPill summary — tampil setelah ada input (progress feedback) */}
+            {(form.title.trim() || form.description.trim() || trimmedRequirements.length > 0) && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
+                <MetaPill label="Category" value={form.category || 'General'} accent />
+                <MetaPill label="Overview" value={`${overviewLength} chars`} />
+                <MetaPill label="Requirements" value={`${trimmedRequirements.length} items`} />
+                <MetaPill label="Skills" value={normalizedSkills.length > 0 ? `${normalizedSkills.length} tagged` : 'Optional'} />
+              </div>
             )}
-          </div>
 
-          {/* Deliverables */}
-          <ListEditor
-            label="Deliverables"
-            hint="What the builder must submit as proof of work."
-            items={form.deliverables}
-            onChange={v => set('deliverables', v)}
-            placeholder="e.g. GitHub repo with tests, Loom walkthrough video"
-          />
+            {/* 1. Category first (familiarity) */}
+            <div>
+              <FieldLabel hint="Choose the lane that best matches the core work.">Category</FieldLabel>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))', gap: 10 }}>
+                {CATEGORIES.map(c => {
+                  const active = form.category === c.key;
+                  return (
+                    <button
+                      key={c.key}
+                      onClick={() => set('category', c.key)}
+                      style={{
+                        padding: '12px 14px',
+                        textAlign: 'left',
+                        background: active ? theme.colors.primaryDim : theme.colors.bg.elevated,
+                        color: active ? theme.colors.primaryLight : theme.colors.text.secondary,
+                        border: `1px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                        borderRadius: theme.radius.lg,
+                        cursor: 'pointer',
+                        transition: theme.transition,
+                        boxShadow: active ? `0 0 0 1px ${theme.colors.primary}` : 'none',
+                        minHeight: 44,
+                      }}
+                      onMouseEnter={e => {
+                        if (!active) {
+                          e.currentTarget.style.borderColor = theme.colors.border.default;
+                          e.currentTarget.style.background = theme.colors.bg.hover;
+                        }
+                      }}
+                      onMouseLeave={e => {
+                        if (!active) {
+                          e.currentTarget.style.borderColor = theme.colors.border.subtle;
+                          e.currentTarget.style.background = theme.colors.bg.elevated;
+                        }
+                      }}
+                    >
+                      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <c.Icon size={18} color={active ? theme.colors.primary : theme.colors.text.muted} />
+                        {active && (
+                          <span style={{
+                            fontFamily: theme.fonts.mono,
+                            fontSize: 10,
+                            color: theme.colors.primary,
+                            letterSpacing: '0.08em',
+                            textTransform: 'uppercase',
+                          }}>
+                            Selected
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontFamily: theme.fonts.body, fontWeight: 600, fontSize: 13.5, marginBottom: 3 }}>{c.key}</div>
+                      <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: active ? theme.colors.text.muted : theme.colors.text.faint, lineHeight: 1.5 }}>{c.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-          {/* Skills */}
-          <TagInput
-            label="Required Skills"
-            hint="Helps builders self-select for the task."
-            value={form.skills}
-            onChange={v => set('skills', v)}
-          />
+            {/* 2. Title */}
+            <FormInput
+              label="Title" required
+              hint="Keep it clear and outcome-focused. Max 100 characters because this also lands on-chain."
+              placeholder="e.g. Build a Monad DEX aggregator UI"
+              maxLength={100}
+              value={form.title}
+              onChange={e => {
+                set('title', e.target.value);
+                if (errors.title) {
+                  const v = e.target.value.trim();
+                  if (v && v.length <= 100) setErrors(prev => { const n = { ...prev }; delete n.title; return n; });
+                }
+              }}
+              error={errors.title}
+            />
+
+            {/* 3. Briefing note — collapsible */}
+            <CollapsibleTip
+              label="Tips for a strong brief"
+              content={'Explain the outcome, technical context, constraints, dependencies, and what "done" looks like. Builders should understand the scope before they message you.'}
+              defaultOpen={false}
+            />
+
+            {/* 4. Overview — supports Markdown (bold, italic, bullets, headings, code) */}
+            <FormTextareaWithToolbar
+              label="Overview" required
+              hint="Use this like a mini-spec. Toolbar: bold, italic, bullets, headings, code — hasil format langsung tampil di kolom ini."
+              placeholder="Describe the problem, the product context, the target outcome, technical constraints, dependencies, and anything builders must understand before they start."
+              value={form.description}
+              onChange={e => {
+                set('description', e.target.value);
+                if (errors.description && e.target.value.trim().length >= 30) {
+                  setErrors(prev => { const n = { ...prev }; delete n.description; return n; });
+                }
+              }}
+              error={errors.description}
+              minHeight={200}
+              maxHeight={560}
+            />
+          </SectionCard>
+
+          {/* 5. Requirements — single column */}
+          <SectionCard
+            eyebrow="Execution"
+            title="Builder checklist"
+            hint="Break the work into concrete, reviewable items. Each line should help a builder scope effort quickly."
+          >
+            <div>
+<ListEditor
+                  label="Requirements" required
+                  hint="Core tasks the builder must complete."
+                  items={form.requirements}
+                  onChange={v => {
+                    set('requirements', v);
+                    if (errors.requirements && v.some(r => String(r || '').trim())) {
+                      setErrors(prev => { const n = { ...prev }; delete n.requirements; return n; });
+                    }
+                  }}
+                placeholder="e.g. Implement ERC-20 token swap using Uniswap V3"
+              />
+              {errors.requirements && (
+                <div style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.red[400], marginTop: 4 }}>{errors.requirements}</div>
+              )}
+            </div>
+          </SectionCard>
+
+          {/* 6. Deliverables + Evaluation Criteria — single column */}
+          <SectionCard
+            eyebrow="Review quality"
+            title="Submission expectations"
+            hint="Tell builders what to deliver and how their work will be judged."
+          >
+            <ListEditor
+              label="Deliverables"
+              hint="Artifacts the builder must submit as proof of work."
+              items={form.deliverables}
+              onChange={v => set('deliverables', v)}
+              placeholder="e.g. GitHub repo with tests, Loom walkthrough video"
+            />
+
+            {/* Evaluation Criteria — collapsible, default collapsed */}
+            <CollapsibleListEditor
+              label="Evaluation Criteria"
+              hint="Optional scoring rubric to help builders optimize quality before they submit."
+              items={form.evaluationCriteria}
+              onChange={v => set('evaluationCriteria', v)}
+              placeholder="e.g. Functionality and correctness (40%)"
+              defaultOpen={false}
+            />
+          </SectionCard>
+
+          {/* 7. Skills — last */}
+          <SectionCard
+            eyebrow="Talent fit"
+            title="Required skills"
+            hint="Presets are suggestions only. Add custom skills freely when the work is specialized."
+          >
+            <TagInput
+              label="Required Skills"
+              hint="Helps builders self-select before applying or submitting."
+              value={form.skills}
+              onChange={v => set('skills', v)}
+            />
+          </SectionCard>
         </div>
       )}
 
-      {/* â”€â”€ Step 1: Reward â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ?????????????? Step 1: Reward ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????? */}
       {step === 1 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
 
@@ -1147,9 +1823,52 @@ export default function PostBountyPage() {
             )}
           </div>
 
-          {/* Deadline - split date + time for cleaner, more consistent picker UI */}
+          {/* Deadline - split date + time, with quick presets */}
           <div>
             <FieldLabel required hint="Builders have until this date to submit work.">Submission Deadline</FieldLabel>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              {(() => {
+                const base = new Date(Date.now() + 3600_000);
+                const presets = [
+                  { label: '1 week', days: 7 },
+                  { label: '2 weeks', days: 14 },
+                  { label: '1 month', days: 30 },
+                ];
+                return presets.map(({ label, days }) => {
+                  const d = new Date(base);
+                  d.setDate(d.getDate() + days);
+                  d.setHours(12, 0, 0, 0);
+                  const y = d.getFullYear();
+                  const m = String(d.getMonth() + 1).padStart(2, '0');
+                  const day = String(d.getDate()).padStart(2, '0');
+                  const dateStr = `${y}-${m}-${day}`;
+                  const active = form.deadline && form.deadline.startsWith(dateStr);
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => {
+                        set('deadline', `${dateStr}T12:00:00`);
+                        if (errors.deadline) setErrors(prev => { const n = { ...prev }; delete n.deadline; return n; });
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: theme.radius.md,
+                        border: `1px solid ${active ? theme.colors.primary : theme.colors.border.subtle}`,
+                        background: active ? theme.colors.primaryDim : 'transparent',
+                        color: active ? theme.colors.primary : theme.colors.text.muted,
+                        fontSize: 12,
+                        fontFamily: theme.fonts.body,
+                        cursor: 'pointer',
+                        transition: theme.transition,
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Date</label>
@@ -1269,7 +1988,7 @@ export default function PostBountyPage() {
                 fontSize: 11.5,
                 color: theme.colors.text.muted,
               }}>
-                Deployment ini belum mendukung application flow. Semua bounty diposting sebagai Open.
+                This deployment does not support application flow. All bounties are posted as Open.
               </div>
             )}
           </div>
@@ -1294,119 +2013,242 @@ export default function PostBountyPage() {
         </div>
       )}
 
-      {/* â”€â”€ Step 2: Review â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ?????????????? Step 2: Review ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????? */}
       {step === 2 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Summary card */}
-          <div style={{
-            background: theme.colors.bg.card,
-            border: `1px solid ${theme.colors.border.default}`,
-            borderRadius: theme.radius.xl, overflow: 'hidden',
-          }}>
-            <div style={{ padding: '10px 18px', background: theme.colors.bg.panel, borderBottom: `1px solid ${theme.colors.border.faint}` }}>
-              <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Bounty Summary</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <SectionCard
+            eyebrow="Ready to post"
+            title="Final review"
+            hint="This is the public brief builders will see first. Verify clarity now so the on-chain record matches your intent."
+            tone="primary"
+          >
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(125px, 1fr))', gap: 10 }}>
+              <MetaPill label="Reward" value={`${form.reward || '-'} MON`} accent />
+              <MetaPill label="Winners" value={form.winnerCount || '1'} />
+              <MetaPill label="Mode" value={modeLabel} />
+              <MetaPill label="Deadline" value={deadlineLabel} />
             </div>
 
-            <ReviewRow label="Title"    value={form.title} />
-            <ReviewRow label="Category" value={form.category} />
-            <ReviewRow label="Reward"   value={`${form.reward} MON`} accent mono />
-            {form.winnerCount !== '1' && <ReviewRow label="Winners" value={`${form.winnerCount} (equal split)`} mono />}
-            <ReviewRow label="Deadline" value={form.deadline ? new Date(form.deadline).toLocaleString() : '-'} />
-            <ReviewRow label="Mode"     value={applicationFlowUnsupported ? 'Open (direct submit)' : (form.requiresApplication ? 'Curated (apply-first)' : 'Open (direct submit)')} />
-            {form.contactInfo && <ReviewRow label="Contact" value={form.contactInfo} />}
-          </div>
-
-          {/* Description preview */}
-          {form.description?.trim() && (
             <div style={{
               background: theme.colors.bg.card,
-              border: `1px solid ${theme.colors.border.subtle}`,
-              borderRadius: theme.radius.lg, overflow: 'hidden',
+              border: `1px solid ${theme.colors.border.default}`,
+              borderRadius: theme.radius.lg,
+              overflow: 'hidden',
             }}>
-              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
-                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Description</span>
-              </div>
-              <div style={{ padding: '14px 18px', fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto' }}>
-                {form.description.trim()}
-              </div>
+              <ReviewRow label="Title" value={form.title || '-'} />
+              <ReviewRow label="Category" value={form.category || '-'} />
+              <ReviewRow label="Reward" value={`${form.reward || '-'} MON`} accent mono />
+              {String(form.winnerCount || '1') !== '1' && (
+                <ReviewRow label="Winners" value={`${form.winnerCount} (equal split)`} mono />
+              )}
+              <ReviewRow label="Deadline" value={deadlineLabel} />
+              <ReviewRow label="Mode" value={modeLabel} />
+              {form.contactInfo && <ReviewRow label="Contact" value={form.contactInfo} />}
             </div>
-          )}
+          </SectionCard>
 
-          {/* Requirements preview */}
-          {form.requirements.filter(r => r.trim()).length > 0 && (
-            <div style={{
-              background: theme.colors.bg.card,
-              border: `1px solid ${theme.colors.border.subtle}`,
-              borderRadius: theme.radius.lg, overflow: 'hidden',
-            }}>
-              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
-                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Requirements</span>
-              </div>
-              <div style={{ padding: '10px 18px' }}>
-                {form.requirements.filter(r => r.trim()).map((r, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, padding: '5px 0', borderBottom: i < form.requirements.filter(x=>x.trim()).length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none' }}>
-                    <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.primary, flexShrink: 0, marginTop: 2 }}>{i + 1}.</span>
-                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.5 }}>{r}</span>
-                  </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(280px, 0.9fr)', gap: 18 }}>
+            <SectionCard
+              eyebrow="Brief preview"
+              title={form.title || 'Untitled bounty'}
+              hint="Read this like a builder landing on the page for the first time."
+            >
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <span style={{
+                  padding: '6px 10px',
+                  borderRadius: theme.radius.full,
+                  border: `1px solid ${theme.colors.primaryBorder}`,
+                  background: theme.colors.primaryDim,
+                  fontFamily: theme.fonts.mono,
+                  fontSize: 10.5,
+                  color: theme.colors.primary,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                }}>
+                  {form.category}
+                </span>
+                <span style={{
+                  padding: '6px 10px',
+                  borderRadius: theme.radius.full,
+                  border: `1px solid ${theme.colors.border.subtle}`,
+                  background: theme.colors.bg.panel,
+                  fontFamily: theme.fonts.mono,
+                  fontSize: 10.5,
+                  color: theme.colors.text.faint,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                }}>
+                  {modeLabel}
+                </span>
+                {normalizedSkills.map((skill) => (
+                  <span
+                    key={skill}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: theme.radius.full,
+                      border: `1px solid ${theme.colors.border.subtle}`,
+                      background: theme.colors.bg.elevated,
+                      fontFamily: theme.fonts.body,
+                      fontSize: 11.5,
+                      color: theme.colors.text.muted,
+                    }}
+                  >
+                    {skill}
+                  </span>
                 ))}
               </div>
-            </div>
-          )}
 
-          {/* Deliverables preview */}
-          {form.deliverables.filter(d => d.trim()).length > 0 && (
-            <div style={{
-              background: theme.colors.bg.card,
-              border: `1px solid ${theme.colors.border.subtle}`,
-              borderRadius: theme.radius.lg, overflow: 'hidden',
-            }}>
-              <div style={{ padding: '8px 18px', borderBottom: `1px solid ${theme.colors.border.faint}`, background: theme.colors.bg.panel }}>
-                <span style={{ fontFamily: theme.fonts.mono, fontSize: 9.5, color: theme.colors.text.faint, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Deliverables</span>
+              <div style={{
+                padding: '16px 18px',
+                background: theme.colors.bg.panel,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.lg,
+                fontFamily: theme.fonts.body,
+                fontSize: 13.5,
+                color: theme.colors.text.secondary,
+                lineHeight: 1.75,
+                maxHeight: 320,
+                overflowY: 'auto',
+              }}>
+                {form.description.trim() ? (
+                  <ReactMarkdown components={MD_COMPONENTS}>{form.description.trim()}</ReactMarkdown>
+                ) : (
+                  'No overview provided.'
+                )}
               </div>
-              <div style={{ padding: '10px 18px' }}>
-                {form.deliverables.filter(d => d.trim()).map((d, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, padding: '5px 0', borderBottom: i < form.deliverables.filter(x=>x.trim()).length - 1 ? `1px solid ${theme.colors.border.faint}` : 'none' }}>
-                    <IconChevronRight size={10} color={theme.colors.cyan} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <span style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.5 }}>{d}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+            </SectionCard>
 
-          {/* Cost summary */}
-          <div style={{
-            padding: '14px 16px',
-            background: theme.colors.primaryDim,
-            border: `1px solid ${theme.colors.primaryBorder}`,
-            borderRadius: theme.radius.md,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          }}>
-            <div>
-              <div style={{ fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.text.muted, marginBottom: 2 }}>Total to lock from your wallet</div>
-              <div style={{ fontFamily: theme.fonts.mono, fontSize: 18, color: theme.colors.primary, fontWeight: 600, letterSpacing: '-0.02em' }}>
-                {totalLocked
-                  ? (Number(totalLocked) / 1e18).toFixed(4)
-                  : form.reward ? (parseFloat(form.reward) * 1.05).toFixed(4) : '-'
-                } MON
+            <SectionCard
+              eyebrow="Escrow"
+              title="Funds to be locked"
+              hint="Reward and creator stake are locked in the contract until the bounty settles."
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                <MetaPill label="Reward" value={`${form.reward || '-'} MON`} accent />
+                <MetaPill label="Creator stake" value={`${creatorStakeDisplay} MON`} />
+                <MetaPill label="Total locked" value={`${totalLockedDisplay} MON`} accent />
+                <MetaPill label="Contact" value={form.contactInfo || 'Not provided'} />
               </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.text.faint, lineHeight: 1.6 }}>
-                reward + creator stake<br />
-                <span style={{ color: theme.colors.text.muted }}>stake returned on completion</span>
+              <div style={{
+                padding: '12px 14px',
+                background: theme.colors.bg.panel,
+                border: `1px solid ${theme.colors.border.subtle}`,
+                borderRadius: theme.radius.lg,
+                fontFamily: theme.fonts.body,
+                fontSize: 12.5,
+                color: theme.colors.text.muted,
+                lineHeight: 1.7,
+              }}>
+                By posting, you authorize the smart contract to custody these funds. No centralized party can move them while the bounty is active.
               </div>
-            </div>
+            </SectionCard>
           </div>
 
-          <p style={{ fontFamily: theme.fonts.body, fontSize: 11.5, color: theme.colors.text.faint, lineHeight: 1.6, textAlign: 'center' }}>
-            By posting, you authorize the smart contract to hold these funds. No central party can access them.
-          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18 }}>
+            <ReviewAccordionCard
+              eyebrow="Checklist"
+              title="Requirements"
+              hint={trimmedRequirements.length > 0 ? `${trimmedRequirements.length} task item(s)` : 'No explicit requirements yet.'}
+              defaultOpen={true}
+            >
+              {trimmedRequirements.length > 0 ? trimmedRequirements.map((item, index) => (
+                <div key={`${item}-${index}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <span style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: theme.radius.full,
+                    border: `1px solid ${theme.colors.primaryBorder}`,
+                    background: theme.colors.primaryDim,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontFamily: theme.fonts.mono,
+                    fontSize: 10,
+                    color: theme.colors.primary,
+                    flexShrink: 0,
+                    marginTop: 1,
+                  }}>
+                    {index + 1}
+                  </span>
+                  <div style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.65 }}>
+                    <ReactMarkdown components={MD_COMPONENTS}>{item}</ReactMarkdown>
+                  </div>
+                </div>
+              )) : (
+                <div style={{ fontFamily: theme.fonts.body, fontSize: 12.5, color: theme.colors.text.faint }}>No requirements provided.</div>
+              )}
+            </ReviewAccordionCard>
+
+            <ReviewAccordionCard
+              eyebrow="Submission"
+              title="Deliverables"
+              hint={trimmedDeliverables.length > 0 ? `${trimmedDeliverables.length} proof item(s)` : 'Optional deliverables were left empty.'}
+              defaultOpen={false}
+            >
+              {trimmedDeliverables.length > 0 ? trimmedDeliverables.map((item, index) => (
+                <div key={`${item}-${index}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <IconChevronRight size={12} color={theme.colors.cyan} style={{ flexShrink: 0, marginTop: 4 }} />
+                  <div style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.65 }}>
+                    <ReactMarkdown components={MD_COMPONENTS}>{item}</ReactMarkdown>
+                  </div>
+                </div>
+              )) : (
+                <div style={{ fontFamily: theme.fonts.body, fontSize: 12.5, color: theme.colors.text.faint }}>No deliverables provided.</div>
+              )}
+            </ReviewAccordionCard>
+
+            <ReviewAccordionCard
+              eyebrow="Selection"
+              title="Evaluation criteria"
+              hint={trimmedEvaluationCriteria.length > 0 ? `${trimmedEvaluationCriteria.length} scoring cue(s)` : 'Optional rubric was left empty.'}
+              defaultOpen={false}
+            >
+              {trimmedEvaluationCriteria.length > 0 ? trimmedEvaluationCriteria.map((item, index) => (
+                <div key={`${item}-${index}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <span style={{
+                    fontFamily: theme.fonts.mono,
+                    fontSize: 10,
+                    color: theme.colors.cyan,
+                    marginTop: 3,
+                    flexShrink: 0,
+                  }}>
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <div style={{ fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.text.secondary, lineHeight: 1.65 }}>
+                    <ReactMarkdown components={MD_COMPONENTS}>{item}</ReactMarkdown>
+                  </div>
+                </div>
+              )) : (
+                <div style={{ fontFamily: theme.fonts.body, fontSize: 12.5, color: theme.colors.text.faint }}>No evaluation criteria provided.</div>
+              )}
+            </ReviewAccordionCard>
+          </div>
         </div>
       )}
+      </div>
 
-      {/* â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 36, gap: 10 }}>
+      {/* ?????????????? Navigation ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????? */}
+      {step === STEPS.length - 1 && (
+        <div style={{
+          marginTop: 28,
+          padding: '12px 16px',
+          background: theme.colors.bg.panel,
+          border: `1px solid ${theme.colors.border.subtle}`,
+          borderRadius: theme.radius.lg,
+          fontFamily: theme.fonts.body,
+          fontSize: 12,
+          color: theme.colors.text.muted,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '0 16px',
+          alignItems: 'center',
+        }}>
+          <span><IconCheck size={12} color={theme.colors.green[400]} style={{ verticalAlign: 'middle', marginRight: 4 }} />Title, Overview, Requirements</span>
+          <span><IconCheck size={12} color={theme.colors.green[400]} style={{ verticalAlign: 'middle', marginRight: 4 }} />Reward & Deadline</span>
+          <span><IconCheck size={12} color={theme.colors.green[400]} style={{ verticalAlign: 'middle', marginRight: 4 }} />Review</span>
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24, gap: 10 }}>
         {step > 0 ? (
           <Button variant="ghost" icon={<IconChevronLeft size={14} color="currentColor" />} onClick={handleBack}>Back</Button>
         ) : (
@@ -1426,6 +2268,13 @@ export default function PostBountyPage() {
     </div>
   );
 }
+
+
+
+
+
+
+
 
 
 

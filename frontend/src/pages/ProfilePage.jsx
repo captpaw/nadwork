@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { theme } from '../styles/theme';
 import { useAccount } from 'wagmi';
 import Badge from '../components/common/Badge';
@@ -8,7 +8,7 @@ import EmptyState from '../components/common/EmptyState';
 import { AvatarDisplay, AvatarEditable } from '../components/common/Avatar';
 import { useProfile } from '../hooks/useProfile';
 import { fetchJSON } from '../config/pinata';
-import { getResolvedRegistryContract } from '../utils/registry.js';
+import { getCachedBountySnapshots, getResolvedRegistryContract } from '../utils/registry.js';
 import { useIdentity } from '../hooks/useIdentity';
 import { useProfileMeta } from '../hooks/useProfileMeta';
 import { getAvatarSrc } from '../hooks/useAvatar';
@@ -37,17 +37,17 @@ function getDeliverableLinks(deliverables) {
   return links;
 }
 
-// â”€â”€ Portfolio card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Portfolio card
 function PortfolioCard({ submission, meta, bountyTitle, bountyReward }) {
   const [hov, setHov] = useState(false);
   const desc   = meta?.description || meta?.fullDescription || null;
   const links  = getDeliverableLinks(meta?.deliverables);
 
   const linkLabel = (url) => {
-    if (url.includes('github.com'))   return 'âŒ¥ GitHub';
-    if (url.includes('figma.com'))    return 'â—ˆ Figma';
-    if (url.includes('youtu'))        return 'â–¶ Video';
-    return 'â†— Link';
+    if (url.includes('github.com'))   return 'GitHub';
+    if (url.includes('figma.com'))    return 'Figma';
+    if (url.includes('youtu'))        return 'Video';
+    return 'Link';
   };
 
   return (
@@ -123,7 +123,7 @@ function PortfolioCard({ submission, meta, bountyTitle, bountyReward }) {
               {new Date(Number(submission.submittedAt) * 1000).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
             </span>
           )}
-          <span style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.primary }}>View bounty â†’</span>
+          <span style={{ fontFamily: theme.fonts.body, fontSize: 11, color: theme.colors.primary }}>View bounty {'->'}</span>
         </div>
       </div>
     </div>
@@ -139,11 +139,31 @@ function getAddressFromHash() {
   return match?.[1] || null;
 }
 
-function formatMon(wei) {
-  if (!wei && wei !== 0n) return '0';
-  try { return (Number(BigInt(wei)) / 1e18).toFixed(4).replace(/\.?0+$/, '') || '0'; }
-  catch { return '0'; }
+
+
+function parseTs(value) {
+  if (value == null) return 0;
+  try {
+    return Number(BigInt(value));
+  } catch {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
 }
+
+function formatMon(wei) {
+  if (wei == null) return '0';
+  try {
+    const numeric = Number(wei);
+    if (!Number.isFinite(numeric)) return '0';
+    const mon = numeric / 1e18;
+    if (!Number.isFinite(mon)) return '0';
+    return mon.toFixed(4).replace(/\.?0+$/, '') || '0';
+  } catch {
+    return '0';
+  }
+}
+
 
 const SUB_STATUS = { 0: 'pending', 1: 'approved', 2: 'rejected' };
 const BOUNTY_STATUS = { 0: 'active', 1: 'reviewing', 2: 'completed', 3: 'expired', 4: 'cancelled', 5: 'disputed' };
@@ -156,7 +176,7 @@ function normBountyStatus(s) {
   return BOUNTY_STATUS[Number(s)] || 'active';
 }
 
-// â”€â”€ Skill pill â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Skill pill
 function SkillPill({ label }) {
   return (
     <span style={{
@@ -170,7 +190,7 @@ function SkillPill({ label }) {
   );
 }
 
-// â”€â”€ Social link â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Social link
 function SocialLink({ icon: IconOrNode, href, label }) {
   return (
     <a
@@ -214,11 +234,51 @@ export default function ProfilePage() {
   const [submissionBounties, setSubmissionBounties] = useState({});
   const [postedBounties, setPostedBounties] = useState([]);
   const [postedLoading, setPostedLoading] = useState(false);
+  
+  const [postedSort, setPostedSort] = useState('newest');
+  const [submissionSort, setSubmissionSort] = useState('newest');
   const [notifPermission,  setNotifPermission]  = useState(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied'
   );
 
-  const approvedSubs = submissions.filter(s => normSubStatus(s.status) === 'approved');
+  
+  const sortedPostedBounties = useMemo(() => {
+    const list = [...postedBounties];
+    list.sort((a, b) => {
+      const ta = parseTs(a?.createdAt) || Number(a?.id) || 0;
+      const tb = parseTs(b?.createdAt) || Number(b?.id) || 0;
+      return postedSort === 'oldest' ? ta - tb : tb - ta;
+    });
+    return list;
+  }, [postedBounties, postedSort]);
+
+  const sortedSubmissions = useMemo(() => {
+    const list = [...submissions];
+    list.sort((a, b) => {
+      const ta = parseTs(a?.submittedAt) || Number(a?.id) || 0;
+      const tb = parseTs(b?.submittedAt) || Number(b?.id) || 0;
+      return submissionSort === 'oldest' ? ta - tb : tb - ta;
+    });
+    return list;
+  }, [submissions, submissionSort]);
+  const approvedSubs = useMemo(() => (
+    submissions.filter((s) => normSubStatus(s?.status) === 'approved')
+  ), [submissions]);
+
+
+  const sortSelectStyle = {
+    height: 30,
+    padding: '0 10px',
+    background: theme.colors.bg.input,
+    color: theme.colors.text.secondary,
+    border: '1px solid ' + theme.colors.border.default,
+    borderRadius: theme.radius.md,
+    fontFamily: theme.fonts.mono,
+    fontSize: 11,
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase',
+    outline: 'none',
+  };
 
   // Fetch bounty details for submissions tab
   useEffect(() => {
@@ -231,12 +291,12 @@ export default function ProfilePage() {
         if (!reg) return;
 
         const uniqueIds = [...new Set(submissions.map((s) => String(s.bountyId)))];
-        const rows = await Promise.all(uniqueIds.map((bid) => reg.getBounty(bid).catch(() => null)));
+        const rowMap = await getCachedBountySnapshots(reg, uniqueIds);
         if (cancelled) return;
 
         const map = {};
-        uniqueIds.forEach((id, i) => {
-          const b = rows[i];
+        uniqueIds.forEach((id) => {
+          const b = rowMap[String(id)] ?? null;
           map[id] = b ? { title: b.title, totalReward: b.totalReward } : null;
         });
         setSubmissionBounties(map);
@@ -269,16 +329,17 @@ export default function ProfilePage() {
           return;
         }
 
-        const rows = await Promise.all(bountyIds.map((id) => reg.getBounty(id).catch(() => null)));
+        const rowMap = await getCachedBountySnapshots(reg, bountyIds);
         if (cancelled) return;
 
-        setPostedBounties(bountyIds.map((id, i) => {
-          const b = rows[i];
+        setPostedBounties(bountyIds.map((id) => {
+          const b = rowMap[String(id)] ?? null;
           return {
             id: String(id),
             title: b?.title || null,
             totalReward: b?.totalReward ?? null,
             status: b?.status != null ? Number(b.status) : null,
+            createdAt: b?.createdAt != null ? parseTs(b.createdAt) : null,
           };
         }));
       } catch {
@@ -358,6 +419,7 @@ export default function ProfilePage() {
       const { contract: reg } = await getResolvedRegistryContract();
       if (!reg) return;
       const uniqueBountyIds = [...new Set(approvedSubs.map(s => String(s.bountyId)))];
+      const bountyMap = await getCachedBountySnapshots(reg, uniqueBountyIds);
       await Promise.allSettled([
         ...approvedSubs.map(s =>
           s.metaCid
@@ -366,12 +428,15 @@ export default function ProfilePage() {
               }).catch(() => {})
             : Promise.resolve()
         ),
-        ...uniqueBountyIds.map(bid =>
-          reg.getBounty(bid).then(b => {
-            setBountyData(prev => ({ ...prev, [bid]: { title: b.title, reward: b.totalReward } }));
-          }).catch(() => {})
-        ),
       ]);
+      setBountyData((prev) => {
+        const next = { ...prev };
+        uniqueBountyIds.forEach((bid) => {
+          const b = bountyMap[String(bid)] ?? null;
+          next[bid] = b ? { title: b.title, reward: b.totalReward } : null;
+        });
+        return next;
+      });
     } finally {
       setPortfolioLoading(false);
       setPortfolioLoaded(true);
@@ -396,7 +461,7 @@ export default function ProfilePage() {
 
   if (loading) return <PageLoader />;
 
-  const shortAddr = `${profileAddress.slice(0, 6)}â€¦${profileAddress.slice(-4)}`;
+  const shortAddr = profileAddress ? profileAddress.slice(0, 6) + '...' + profileAddress.slice(-4) : '';
   const displayName = meta?.displayName || username ? (meta?.displayName || `@${username}`) : shortAddr;
   const avatarSrc   = getAvatarSrc(profileAddress);
 
@@ -408,7 +473,7 @@ export default function ProfilePage() {
         <h1 className="page-title">{isSelf ? 'Account' : (username ? `@${username}` : displayName)}</h1>
       </div>
 
-      {/* â”€â”€ Profile header card â”€â”€ */}
+      {/* Profile header card */}
       <div style={{
         padding: '24px 28px', marginBottom: 24,
         background: theme.colors.bg.card,
@@ -446,7 +511,7 @@ export default function ProfilePage() {
               )}
             </div>
 
-            {/* Address â€” shown once, compact */}
+            {/* Address (shown once, compact) */}
             <div style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.faint, letterSpacing: '0.02em', marginBottom: 6 }}>
               {shortAddr}
             </div>
@@ -499,7 +564,7 @@ export default function ProfilePage() {
                 color: theme.colors.primaryLight,
               }}>
                 <IconBounties size={14} color={theme.colors.primary} style={{ flexShrink: 0 }} />
-                <span>Complete your profile â€” add a bio and claim your username</span>
+                <span>Complete your profile - add a bio and claim your username</span>
               </div>
             )}
           </div>
@@ -529,7 +594,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* â”€â”€ Bottom bar: identity status + action buttons â”€â”€ */}
+        {/* Bottom bar: identity status + action buttons */}
         {isSelf && (
           <div style={{ marginTop: 20, paddingTop: 18, borderTop: `1px solid ${theme.colors.border.faint}` }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
@@ -549,7 +614,7 @@ export default function ProfilePage() {
                   <span style={{ fontFamily: theme.fonts.mono, fontSize: 10, color: theme.colors.text.faint, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Backup</span>
                   {linkedWallets.length > 0 ? (
                     <span style={{ fontFamily: theme.fonts.mono, fontSize: 11, fontWeight: 600, color: theme.colors.green[400], background: theme.colors.green.dim, border: `1px solid ${theme.colors.green.border}`, borderRadius: theme.radius.full, padding: '2px 10px' }}>
-                      {`${linkedWallets[0].slice(0, 6)}â€¦${linkedWallets[0].slice(-4)}`}
+                      {`${linkedWallets[0].slice(0, 6)}...${linkedWallets[0].slice(-4)}`}
                     </span>
                   ) : (
                     <span style={{ fontFamily: theme.fonts.mono, fontSize: 11, color: theme.colors.text.faint, background: theme.colors.bg.elevated, border: `1px solid ${theme.colors.border.subtle}`, borderRadius: theme.radius.full, padding: '2px 10px' }}>None</span>
@@ -575,7 +640,7 @@ export default function ProfilePage() {
                     }}
                     onMouseEnter={e => { e.currentTarget.style.borderColor = theme.colors.primary; e.currentTarget.style.color = theme.colors.primaryLight; }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = theme.colors.border.default; e.currentTarget.style.color = theme.colors.text.muted; }}
-                  >ðŸ”” Enable Notifications</button>
+                  >Enable Notifications</button>
                 )}
                 <button
                   onClick={() => setEditProfileOpen(true)}
@@ -618,7 +683,7 @@ export default function ProfilePage() {
         )}
       </div>
 
-      {/* â”€â”€ Modals â”€â”€ */}
+      {/* Modals */}
       {isSelf && (
         <Suspense fallback={null}>
           <EditProfileModal
@@ -636,7 +701,7 @@ export default function ProfilePage() {
         </Suspense>
       )}
 
-      {/* â”€â”€ Tabs â”€â”€ */}
+      {/* Tabs */}
       <div>
         {/* Tab headers */}
         <div style={{ display: 'flex', gap: 0, borderBottom: `1px solid ${theme.colors.border.subtle}`, marginBottom: 24 }}>
@@ -672,11 +737,26 @@ export default function ProfilePage() {
           ))}
         </div>
 
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          {activeTab === 'posted' && sortedPostedBounties.length > 1 && (
+            <select value={postedSort} onChange={(e) => setPostedSort(e.target.value)} style={sortSelectStyle}>
+              <option value='newest'>Newest</option>
+              <option value='oldest'>Oldest</option>
+            </select>
+          )}
+          {activeTab === 'submissions' && sortedSubmissions.length > 1 && (
+            <select value={submissionSort} onChange={(e) => setSubmissionSort(e.target.value)} style={sortSelectStyle}>
+              <option value='newest'>Newest</option>
+              <option value='oldest'>Oldest</option>
+            </select>
+          )}
+        </div>
+
         {/* Posted tab */}
         {activeTab === 'posted' && (
-          postedLoading && postedBounties.length === 0 ? (
-            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading posted bounties…</div>
-          ) : postedBounties.length === 0 ? (
+          postedLoading && sortedPostedBounties.length === 0 ? (
+            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading posted bounties...</div>
+          ) : sortedPostedBounties.length === 0 ? (
             <EmptyState
               icon={<IconBounties size={32} color={theme.colors.text.faint} />}
               title="No bounties posted yet"
@@ -686,7 +766,7 @@ export default function ProfilePage() {
             />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {postedBounties.map((b) => (
+              {sortedPostedBounties.map((b) => (
                 <div
                   key={String(b.id)}
                   onClick={() => { window.location.hash = `#/bounty/${b.id}`; }}
@@ -715,11 +795,11 @@ export default function ProfilePage() {
         )}
         {/* Submissions tab */}
         {activeTab === 'submissions' && (
-          submissions.length === 0 ? (
+          sortedSubmissions.length === 0 ? (
             <EmptyState icon={<IconTarget size={32} color={theme.colors.text.faint} />} title="No submissions yet" message={isSelf ? 'Start submitting work to bounties to build your history.' : 'This builder has not submitted any work yet.'} />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {submissions.map(s => {
+              {sortedSubmissions.map(s => {
                 const bountyInfo = submissionBounties[String(s.bountyId)];
                 const bountyTitle = bountyInfo?.title || s.bountyTitle || `Bounty #${s.bountyId}`;
                 const isApproved = normSubStatus(s.status) === 'approved';
@@ -763,7 +843,7 @@ export default function ProfilePage() {
         {/* Portfolio tab */}
         {activeTab === 'portfolio' && (
           portfolioLoading ? (
-            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading portfolioâ€¦</div>
+            <div style={{ paddingTop: 48, textAlign: 'center', fontFamily: theme.fonts.mono, fontSize: 12, color: theme.colors.text.faint }}>Loading portfolio...</div>
           ) : approvedSubs.length === 0 ? (
             <EmptyState
               icon={<IconTarget size={32} color={theme.colors.text.faint} />}
@@ -788,5 +868,12 @@ export default function ProfilePage() {
     </div>
   );
 }
+
+
+
+
+
+
+
 
 

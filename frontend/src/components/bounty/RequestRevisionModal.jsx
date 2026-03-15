@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import Modal from '@/components/common/Modal.jsx';
 import { IconCheck } from '@/components/icons/index.jsx';
 import Button from '@/components/common/Button.jsx';
@@ -203,7 +203,7 @@ export default function RequestRevisionModal({
                 Cancel
               </Button>
               <Button variant="primary" onClick={handleSubmit} disabled={uploading || !message.trim()}>
-                {uploading ? 'Uploading…' : 'Upload & Get Link'}
+                {uploading ? 'Uploading...' : 'Upload & Get Link'}
               </Button>
             </div>
           </>
@@ -212,7 +212,7 @@ export default function RequestRevisionModal({
             <div style={{ padding: '14px 16px', background: t.colors.green.dim, border: `1px solid ${t.colors.green.border}`, borderRadius: t.radius.md }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: t.colors.green[400], marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}><IconCheck size={14} color={t.colors.green[400]} /> Revision request ready</div>
               <p style={{ fontSize: 11.5, color: t.colors.text.muted, margin: 0, lineHeight: 1.6 }}>
-                Share the link below with the builder. When they open it, they’ll see your feedback and can upload their revised work.
+                Share the link below with the builder. When they open it, they'll see your feedback and can upload their revised work.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

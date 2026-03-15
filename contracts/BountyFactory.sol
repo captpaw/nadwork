@@ -385,6 +385,18 @@ contract BountyFactory {
             escrow.refundSubmissionStake(bountyId, winners[i]);
         }
 
+        // Refund submission stakes for all non-winning (still PENDING) submissions.
+        // After setWinners only chosen submissions are APPROVED; the rest stay PENDING and would
+        // otherwise be stuck in escrow. Refund them so builders get their stake back.
+        {
+            BountyRegistry.Submission[] memory subs = registry.getBountySubmissions(bountyId);
+            for (uint256 i = 0; i < subs.length; i++) {
+                if (subs[i].status == BountyRegistry.SubStatus.PENDING) {
+                    escrow.refundSubmissionStake(bountyId, subs[i].builder);
+                }
+            }
+        }
+
         // V3: return creator stake on successful completion
         escrow.refundCreatorStake(bountyId, b.creator);
 

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAccount } from 'wagmi';
-import { ADDRESSES, FACTORY_ABI, REGISTRY_ABI } from '../config/contracts';
+import { ADDRESSES, FACTORY_ABI } from '../config/contracts';
 import { getReadContractFast, invalidateContractCache } from '../utils/ethers';
-import { listCreatorBountyIds } from '../utils/registry';
+import { getCachedBountySnapshots, getResolvedRegistryContract, listCreatorBountyIds } from '../utils/registry';
 import { getFactoryCapabilities } from '../utils/factoryCapabilities';
 
 const NOTIF_KEY = (addr) => `nw_notifs_v1_${addr.toLowerCase()}`;
@@ -68,7 +68,8 @@ export function useNotifications() {
       const supportsApplications = !(factoryCaps?.openOnlyLegacy || factoryCaps?.supportsApplications === false);
 
       const factory = getReadContractFast(ADDRESSES.factory, FACTORY_ABI);
-      const registry = getReadContractFast(ADDRESSES.registry, REGISTRY_ABI);
+      const { contract: registry } = await getResolvedRegistryContract();
+      if (!registry) return;
 
       const snap = readStore(SNAP_KEY(address), {});
       const newSnap = { ...snap };
@@ -168,10 +169,7 @@ export function useNotifications() {
       // 4-6) Creator-side checks
       try {
         const creatorBountyIds = await listCreatorBountyIds(registry, address).catch(() => []);
-        const bountyMap = {};
-        for (const bid of creatorBountyIds) {
-          bountyMap[bid] = await registry.getBounty(bid).catch(() => null);
-        }
+        const bountyMap = await getCachedBountySnapshots(registry, creatorBountyIds).catch(() => ({}));
 
         const nowSec = Math.floor(Date.now() / 1000);
 
@@ -331,3 +329,4 @@ function formatMon(wei) {
     return '0';
   }
 }
+

@@ -406,6 +406,28 @@ describe("approveWinners — V3 (stake refunds)", function () {
     await expect(factory.connect(hunter2).approveWinners(1, [1], [1]))
       .to.be.revertedWithCustomError(factory, "FactoryNotCreator");
   });
+
+  it("refunds submission stake to all non-winning builders when one winner approved", async function () {
+    const ctx = await deployAll();
+    const { factory, poster, hunter1, hunter2, escrow, identity } = ctx;
+    await registerUsername(identity, hunter1, "usr1");
+    await registerUsername(identity, hunter2, "usr2");
+    const p = await defaultParams();
+    await createBounty(factory, poster, p);
+    const stake = calcSubStake(ETH(0.5));
+    await factory.connect(hunter1).submitWork(1, "Qm1", { value: stake });
+    await factory.connect(hunter2).submitWork(1, "Qm2", { value: stake });
+    expect(await escrow.submissionStakes(1, hunter1.address)).to.equal(stake);
+    expect(await escrow.submissionStakes(1, hunter2.address)).to.equal(stake);
+
+    const hunter2Before = await ethers.provider.getBalance(hunter2.address);
+    await factory.connect(poster).approveWinners(1, [1], [1]); // only hunter1 wins
+    const hunter2After = await ethers.provider.getBalance(hunter2.address);
+
+    expect(await escrow.submissionStakes(1, hunter1.address)).to.equal(0n);
+    expect(await escrow.submissionStakes(1, hunter2.address)).to.equal(0n);
+    expect(hunter2After - hunter2Before).to.be.gte(stake); // hunter2 got at least their stake back
+  });
 });
 
 // ─────────────────────────────────────────────
